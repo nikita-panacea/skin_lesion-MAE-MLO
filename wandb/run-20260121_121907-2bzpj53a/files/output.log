@@ -1,0 +1,31 @@
+2026-01-21 12:19:09,178 - Main - INFO - Loading datasets...
+2026-01-21 12:19:09,189 - Main - INFO - Train samples: 17731
+2026-01-21 12:19:09,189 - Main - INFO - Val samples: 3800
+2026-01-21 12:19:09,190 - Main - INFO - Test samples: 3800
+2026-01-21 12:19:09,190 - Main - INFO - Creating models...
+2026-01-21 12:19:12,969 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+Successfully loaded UNet from /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+UNet segmentation model loaded and frozen
+2026-01-21 12:19:13,445 - Main - INFO -
+======================================================================
+2026-01-21 12:19:13,446 - Main - INFO - Training Configuration:
+2026-01-21 12:19:13,446 - Main - INFO -   Total iterations: 110800
+2026-01-21 12:19:13,446 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 12:19:13,446 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 12:19:13,446 - Main - INFO -   Total validations: 1108
+2026-01-21 12:19:13,446 - Main - INFO - ======================================================================
+
+2026-01-21 12:19:13,446 - Main - INFO - Initializing MLO engine...
+[2026-01-21 12:19:13] [INFO] Initializing Multilevel Optimization...
+Traceback (most recent call last):
+  File "train_mlo.py", line 600, in <module>
+    main()
+  File "train_mlo.py", line 567, in main
+    engine = MLOSkinLesionEngine(
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 63, in __init__
+    self.initialize()
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 144, in initialize
+    self.set_problem_attr(problem)
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 321, in set_problem_attr
+    assert not hasattr(problem, name)
+AssertionError

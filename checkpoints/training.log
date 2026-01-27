@@ -1,0 +1,183 @@
+2026-01-20 16:03:56,775 - Main - INFO - Using device: cuda
+2026-01-20 16:03:58,609 - Main - INFO - Loading datasets...
+2026-01-20 16:03:58,619 - Main - INFO - Train samples: 40
+2026-01-20 16:03:58,619 - Main - INFO - Val samples: 3800
+2026-01-20 16:03:58,619 - Main - INFO - Test samples: 3800
+2026-01-20 16:03:58,619 - Main - INFO - Creating models...
+2026-01-20 16:04:00,323 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:04:00,527 - Main - INFO - 
+======================================================================
+2026-01-20 16:04:00,527 - Main - INFO - Training Configuration:
+2026-01-20 16:04:00,527 - Main - INFO -   Total iterations: 200
+2026-01-20 16:04:00,527 - Main - INFO -   Iterations per epoch: 2
+2026-01-20 16:04:00,527 - Main - INFO -   Validation every: 100 iterations
+2026-01-20 16:04:00,527 - Main - INFO -   Total validations: 2
+2026-01-20 16:04:00,527 - Main - INFO - ======================================================================
+
+2026-01-20 16:04:00,527 - Main - INFO - Initializing MLO engine...
+2026-01-20 16:07:25,365 - Main - INFO - Using device: cuda
+2026-01-20 16:07:27,285 - Main - INFO - Loading datasets...
+2026-01-20 16:07:27,295 - Main - INFO - Train samples: 17731
+2026-01-20 16:07:27,295 - Main - INFO - Val samples: 3800
+2026-01-20 16:07:27,295 - Main - INFO - Test samples: 3800
+2026-01-20 16:07:27,295 - Main - INFO - Creating models...
+2026-01-20 16:07:28,991 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:07:29,204 - Main - INFO - 
+======================================================================
+2026-01-20 16:07:29,204 - Main - INFO - Training Configuration:
+2026-01-20 16:07:29,204 - Main - INFO -   Total iterations: 110800
+2026-01-20 16:07:29,204 - Main - INFO -   Iterations per epoch: 1108
+2026-01-20 16:07:29,204 - Main - INFO -   Validation every: 100 iterations
+2026-01-20 16:07:29,204 - Main - INFO -   Total validations: 1108
+2026-01-20 16:07:29,204 - Main - INFO - ======================================================================
+
+2026-01-20 16:07:29,204 - Main - INFO - Initializing MLO engine...
+2026-01-20 16:48:02,941 - Main - INFO - Using device: cuda
+2026-01-20 16:48:04,829 - Main - INFO - Loading datasets...
+2026-01-20 16:48:04,839 - Main - INFO - Train samples: 17731
+2026-01-20 16:48:04,839 - Main - INFO - Val samples: 3800
+2026-01-20 16:48:04,840 - Main - INFO - Test samples: 3800
+2026-01-20 16:48:04,840 - Main - INFO - Creating models...
+2026-01-20 16:48:06,622 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:49:01,662 - Main - INFO - Using device: cuda
+2026-01-20 16:49:03,504 - Main - INFO - Loading datasets...
+2026-01-20 16:49:03,514 - Main - INFO - Train samples: 17731
+2026-01-20 16:49:03,514 - Main - INFO - Val samples: 3800
+2026-01-20 16:49:03,514 - Main - INFO - Test samples: 3800
+2026-01-20 16:49:03,514 - Main - INFO - Creating models...
+2026-01-20 16:49:05,271 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:49:56,640 - Main - INFO - Using device: cuda
+2026-01-20 16:49:58,433 - Main - INFO - Loading datasets...
+2026-01-20 16:49:58,447 - Main - INFO - Train samples: 17731
+2026-01-20 16:49:58,448 - Main - INFO - Val samples: 3800
+2026-01-20 16:49:58,448 - Main - INFO - Test samples: 3800
+2026-01-20 16:49:58,448 - Main - INFO - Creating models...
+2026-01-20 16:50:00,160 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:52:26,858 - Main - INFO - Using device: cuda
+2026-01-20 16:52:28,709 - Main - INFO - Loading datasets...
+2026-01-20 16:52:28,719 - Main - INFO - Train samples: 17731
+2026-01-20 16:52:28,719 - Main - INFO - Val samples: 3800
+2026-01-20 16:52:28,719 - Main - INFO - Test samples: 3800
+2026-01-20 16:52:28,719 - Main - INFO - Creating models...
+2026-01-20 16:52:30,392 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:52:30,591 - Main - INFO - 
+======================================================================
+2026-01-20 16:52:30,591 - Main - INFO - Training Configuration:
+2026-01-20 16:52:30,591 - Main - INFO -   Total iterations: 110800
+2026-01-20 16:52:30,591 - Main - INFO -   Iterations per epoch: 1108
+2026-01-20 16:52:30,591 - Main - INFO -   Validation every: 100 iterations
+2026-01-20 16:52:30,591 - Main - INFO -   Total validations: 1108
+2026-01-20 16:52:30,591 - Main - INFO - ======================================================================
+
+2026-01-20 16:52:30,591 - Main - INFO - Initializing MLO engine...
+2026-01-20 16:52:30,890 - Main - INFO - ======================================================================
+2026-01-20 16:52:30,890 - Main - INFO - Starting iteration-wise MLO training...
+2026-01-20 16:52:30,891 - Main - INFO - ======================================================================
+2026-01-20 16:55:18,250 - Main - INFO - Using device: cuda
+2026-01-20 16:55:20,127 - Main - INFO - Loading datasets...
+2026-01-20 16:55:20,137 - Main - INFO - Train samples: 17731
+2026-01-20 16:55:20,137 - Main - INFO - Val samples: 3800
+2026-01-20 16:55:20,137 - Main - INFO - Test samples: 3800
+2026-01-20 16:55:20,138 - Main - INFO - Creating models...
+2026-01-20 16:55:21,900 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-20 16:55:22,097 - Main - INFO - 
+======================================================================
+2026-01-20 16:55:22,098 - Main - INFO - Training Configuration:
+2026-01-20 16:55:22,098 - Main - INFO -   Total iterations: 110800
+2026-01-20 16:55:22,098 - Main - INFO -   Iterations per epoch: 1108
+2026-01-20 16:55:22,098 - Main - INFO -   Validation every: 100 iterations
+2026-01-20 16:55:22,098 - Main - INFO -   Total validations: 1108
+2026-01-20 16:55:22,098 - Main - INFO - ======================================================================
+
+2026-01-20 16:55:22,098 - Main - INFO - Initializing MLO engine...
+2026-01-20 16:55:22,467 - Main - INFO - ======================================================================
+2026-01-20 16:55:22,469 - Main - INFO - Starting iteration-wise MLO training...
+2026-01-20 16:55:22,469 - Main - INFO - ======================================================================
+2026-01-21 12:19:07,204 - Main - INFO - Using device: cuda
+2026-01-21 12:19:09,178 - Main - INFO - Loading datasets...
+2026-01-21 12:19:09,189 - Main - INFO - Train samples: 17731
+2026-01-21 12:19:09,189 - Main - INFO - Val samples: 3800
+2026-01-21 12:19:09,190 - Main - INFO - Test samples: 3800
+2026-01-21 12:19:09,190 - Main - INFO - Creating models...
+2026-01-21 12:19:12,969 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 12:19:13,445 - Main - INFO - 
+======================================================================
+2026-01-21 12:19:13,446 - Main - INFO - Training Configuration:
+2026-01-21 12:19:13,446 - Main - INFO -   Total iterations: 110800
+2026-01-21 12:19:13,446 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 12:19:13,446 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 12:19:13,446 - Main - INFO -   Total validations: 1108
+2026-01-21 12:19:13,446 - Main - INFO - ======================================================================
+
+2026-01-21 12:19:13,446 - Main - INFO - Initializing MLO engine...
+2026-01-21 12:34:24,700 - Main - INFO - Using device: cuda
+2026-01-21 12:34:26,606 - Main - INFO - Loading datasets...
+2026-01-21 12:34:26,618 - Main - INFO - Train samples: 17731
+2026-01-21 12:34:26,618 - Main - INFO - Val samples: 3800
+2026-01-21 12:34:26,618 - Main - INFO - Test samples: 3800
+2026-01-21 12:34:26,618 - Main - INFO - Creating models...
+2026-01-21 12:34:30,041 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 12:34:30,450 - Main - INFO - 
+======================================================================
+2026-01-21 12:34:30,450 - Main - INFO - Training Configuration:
+2026-01-21 12:34:30,450 - Main - INFO -   Total iterations: 110800
+2026-01-21 12:34:30,450 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 12:34:30,450 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 12:34:30,450 - Main - INFO -   Total validations: 1108
+2026-01-21 12:34:30,450 - Main - INFO - ======================================================================
+
+2026-01-21 12:34:30,450 - Main - INFO - Initializing MLO engine...
+2026-01-21 12:34:31,166 - Main - INFO - ======================================================================
+2026-01-21 12:34:31,167 - Main - INFO - Starting iteration-wise MLO training...
+2026-01-21 12:34:31,167 - Main - INFO - ======================================================================
+2026-01-21 12:38:28,482 - Main - INFO - Using device: cuda
+2026-01-21 12:38:30,329 - Main - INFO - Loading datasets...
+2026-01-21 12:38:30,341 - Main - INFO - Train samples: 17731
+2026-01-21 12:38:30,341 - Main - INFO - Val samples: 3800
+2026-01-21 12:38:30,341 - Main - INFO - Test samples: 3800
+2026-01-21 12:38:30,341 - Main - INFO - Creating models...
+2026-01-21 12:38:33,567 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 12:38:34,000 - Main - INFO - 
+======================================================================
+2026-01-21 12:38:34,000 - Main - INFO - Training Configuration:
+2026-01-21 12:38:34,000 - Main - INFO -   Total iterations: 110800
+2026-01-21 12:38:34,000 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 12:38:34,000 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 12:38:34,000 - Main - INFO -   Total validations: 1108
+2026-01-21 12:38:34,000 - Main - INFO - ======================================================================
+
+2026-01-21 12:38:34,001 - Main - INFO - Initializing MLO engine...
+2026-01-21 12:38:34,403 - Main - INFO - ======================================================================
+2026-01-21 12:38:34,406 - Main - INFO - Starting iteration-wise MLO training...
+2026-01-21 12:38:34,407 - Main - INFO - ======================================================================
+2026-01-21 13:56:11,132 - Main - INFO - Using device: cuda
+2026-01-21 13:56:13,313 - Main - INFO - Loading datasets...
+2026-01-21 13:56:13,323 - Main - INFO - Train samples: 17731
+2026-01-21 13:56:13,324 - Main - INFO - Val samples: 3800
+2026-01-21 13:56:13,324 - Main - INFO - Test samples: 3800
+2026-01-21 13:56:13,324 - Main - INFO - Creating models...
+2026-01-21 13:56:15,112 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 13:57:13,661 - Main - INFO - Using device: cuda
+2026-01-21 13:57:17,404 - Main - INFO - Loading datasets...
+2026-01-21 13:57:17,414 - Main - INFO - Train samples: 17731
+2026-01-21 13:57:17,414 - Main - INFO - Val samples: 3800
+2026-01-21 13:57:17,414 - Main - INFO - Test samples: 3800
+2026-01-21 13:57:17,415 - Main - INFO - Creating models...
+2026-01-21 13:57:19,171 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 13:58:42,100 - Main - INFO - Using device: cuda
+2026-01-21 13:58:43,977 - Main - INFO - Loading datasets...
+2026-01-21 13:58:43,988 - Main - INFO - Train samples: 17731
+2026-01-21 13:58:43,988 - Main - INFO - Val samples: 3800
+2026-01-21 13:58:43,988 - Main - INFO - Test samples: 3800
+2026-01-21 13:58:43,988 - Main - INFO - Creating models...
+2026-01-21 13:58:45,774 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+2026-01-21 13:58:46,007 - Main - INFO - 
+======================================================================
+2026-01-21 13:58:46,007 - Main - INFO - Training Configuration:
+2026-01-21 13:58:46,007 - Main - INFO -   Total iterations: 110800
+2026-01-21 13:58:46,007 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 13:58:46,007 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 13:58:46,007 - Main - INFO -   Total validations: 1108
+2026-01-21 13:58:46,007 - Main - INFO - ======================================================================
+
+2026-01-21 13:58:46,007 - Main - INFO - Initializing MLO engine...

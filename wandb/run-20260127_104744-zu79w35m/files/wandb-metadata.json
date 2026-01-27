@@ -1,0 +1,62 @@
+{
+  "os": "Linux-5.19.0-46-generic-x86_64-with-glibc2.17",
+  "python": "CPython 3.8.20",
+  "startedAt": "2026-01-27T05:17:44.550540Z",
+  "args": [
+    "--train_csv",
+    "/home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/train.csv",
+    "--val_csv",
+    "/home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/val.csv",
+    "--test_csv",
+    "/home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/test.csv",
+    "--img_dir",
+    "/home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/images",
+    "--pretrained_unet",
+    "/home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl",
+    "--epochs",
+    "50",
+    "--batch_size",
+    "32",
+    "--mask_ratio",
+    "0.75",
+    "--loss_lambda",
+    "1.0",
+    "--output_dir",
+    "checkpoints/mlo_full",
+    "--exp_name",
+    "mlo_hybrid_unet",
+    "--wandb_mode",
+    "online"
+  ],
+  "program": "train_mlo_skin.py",
+  "codePath": "train_mlo_skin.py",
+  "codePathLocal": "train_mlo_skin.py",
+  "email": "tiwarinikita98@gmail.com",
+  "root": "/home/ubuntu/Documents/Nikita/lesion-classifier-MLO",
+  "host": "panacea-ml-learn",
+  "executable": "/home/ubuntu/anaconda3/envs/convnextv2/bin/python",
+  "cpu_count": 24,
+  "cpu_count_logical": 32,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1967317549056",
+      "used": "1796360642560"
+    }
+  },
+  "memory": {
+    "total": "67121922048"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "25757220864",
+      "cudaCores": 16384,
+      "architecture": "Ada",
+      "uuid": "GPU-a5098599-c5f3-77be-d7a6-3094bc893534"
+    }
+  ],
+  "cudaVersion": "12.1",
+  "writerId": "ga57ba75f8if6ybitzjfu0wt6ax7jkgh"
+}

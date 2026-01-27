@@ -1,0 +1,14 @@
+2026-01-20 16:49:58,433 - Main - INFO - Loading datasets...
+2026-01-20 16:49:58,447 - Main - INFO - Train samples: 17731
+2026-01-20 16:49:58,448 - Main - INFO - Val samples: 3800
+2026-01-20 16:49:58,448 - Main - INFO - Test samples: 3800
+2026-01-20 16:49:58,448 - Main - INFO - Creating models...
+2026-01-20 16:50:00,160 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+Successfully loaded UNet from /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+UNet segmentation model loaded and frozen
+Traceback (most recent call last):
+  File "train_mlo.py", line 592, in <module>
+    main()
+  File "train_mlo.py", line 483, in main
+    engine_config = EngineConfig(
+TypeError: __init__() got an unexpected keyword argument 'retain_graph'

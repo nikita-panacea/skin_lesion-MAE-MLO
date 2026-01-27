@@ -1,0 +1,21 @@
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_setup.py:_flush():81] Current SDK version is 0.24.0
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_setup.py:_flush():81] Configure stats pid to 4081547
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /home/ubuntu/Documents/Nikita/lesion-classifier-MLO/wandb/run-20260120_160726-jwj0m5pf/logs/debug.log
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /home/ubuntu/Documents/Nikita/lesion-classifier-MLO/wandb/run-20260120_160726-jwj0m5pf/logs/debug-internal.log
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_init.py:init():844] calling init triggers
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'data_path': '/home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/', 'num_classes': 8, 'img_size': 224, 'train_samples': 40, 'val_split': 0.2, 'encoder_dims': [96, 192, 384, 768], 'encoder_depths': [3, 3, 9, 12], 'decoder_dim': 512, 'decoder_depth': 8, 'mask_ratio': 0.75, 'patch_size': 16, 'use_seg_init': True, 'seg_model_path': '/home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl', 'masking_hidden_dim': 512, 'epochs': 100, 'batch_size': 16, 'unroll_steps_mae': 2, 'unroll_steps_classifier': 1, 'unroll_steps_masking': 1, 'lr_mae': 0.00015, 'lr_classifier': 0.0005, 'lr_masking': 5e-05, 'weight_decay': 0.05, 'warmup_epochs': 5, 'lambda_rec': 1.0, 'lambda_cls': 1.0, 'lambda_augmented': 0.5, 'device': 'cuda', 'num_workers': 4, 'seed': 42, 'output_dir': './checkpoints', 'wandb_project': 'skin-lesion-mlo', 'wandb_mode': 'online', 'eval_freq': 5, 'save_freq': 10, '_wandb': {}}
+2026-01-20 16:07:26,078 INFO    MainThread:4081547 [wandb_init.py:init():892] starting backend
+2026-01-20 16:07:26,299 INFO    MainThread:4081547 [wandb_init.py:init():895] sending inform_init request
+2026-01-20 16:07:26,311 INFO    MainThread:4081547 [wandb_init.py:init():903] backend started and connected
+2026-01-20 16:07:26,318 INFO    MainThread:4081547 [wandb_init.py:init():973] updated telemetry
+2026-01-20 16:07:26,318 INFO    MainThread:4081547 [wandb_init.py:init():997] communicating run to backend with 90.0 second timeout
+2026-01-20 16:07:27,264 INFO    MainThread:4081547 [wandb_init.py:init():1044] starting run threads in backend
+2026-01-20 16:07:27,283 INFO    MainThread:4081547 [wandb_run.py:_console_start():2529] atexit reg
+2026-01-20 16:07:27,283 INFO    MainThread:4081547 [wandb_run.py:_redirect():2377] redirect: wrap_raw
+2026-01-20 16:07:27,283 INFO    MainThread:4081547 [wandb_run.py:_redirect():2446] Wrapping output streams.
+2026-01-20 16:07:27,283 INFO    MainThread:4081547 [wandb_run.py:_redirect():2469] Redirects installed.
+2026-01-20 16:07:27,285 INFO    MainThread:4081547 [wandb_init.py:init():1084] run started, returning control to user process
+2026-01-20 16:07:29,206 INFO    wandb-AsyncioManager-main:4081547 [service_client.py:_forward_responses():80] Reached EOF.
+2026-01-20 16:07:29,206 INFO    wandb-AsyncioManager-main:4081547 [mailbox.py:close():137] Closing mailbox, abandoning 1 handles.

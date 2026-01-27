@@ -1,0 +1,16 @@
+2026-01-21 13:56:13,313 - Main - INFO - Loading datasets...
+2026-01-21 13:56:13,323 - Main - INFO - Train samples: 17731
+2026-01-21 13:56:13,324 - Main - INFO - Val samples: 3800
+2026-01-21 13:56:13,324 - Main - INFO - Test samples: 3800
+2026-01-21 13:56:13,324 - Main - INFO - Creating models...
+2026-01-21 13:56:15,112 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+Traceback (most recent call last):
+  File "train_mlo.py", line 562, in <module>
+    main()
+  File "train_mlo.py", line 403, in main
+    masking_model = create_masking_network(
+  File "/home/ubuntu/Documents/Nikita/lesion-classifier-MLO/models/masking_network.py", line 236, in create_masking_network
+    unet = load_unet_for_masking(unet_checkpoint, device)
+  File "/home/ubuntu/Documents/Nikita/lesion-classifier-MLO/models/masking_network.py", line 176, in load_unet_for_masking
+    from unet import UNet  # Import from your UNet implementation
+ModuleNotFoundError: No module named 'unet'

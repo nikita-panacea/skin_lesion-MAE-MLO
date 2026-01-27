@@ -1,0 +1,32 @@
+2026-01-21 13:58:43,977 - Main - INFO - Loading datasets...
+2026-01-21 13:58:43,988 - Main - INFO - Train samples: 17731
+2026-01-21 13:58:43,988 - Main - INFO - Val samples: 3800
+2026-01-21 13:58:43,988 - Main - INFO - Test samples: 3800
+2026-01-21 13:58:43,988 - Main - INFO - Creating models...
+2026-01-21 13:58:45,774 - Main - INFO - Classifier - Total: 37,029,896 (37.03M)
+Successfully loaded UNet from /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+UNet segmentation model loaded and frozen
+2026-01-21 13:58:46,007 - Main - INFO -
+======================================================================
+2026-01-21 13:58:46,007 - Main - INFO - Training Configuration:
+2026-01-21 13:58:46,007 - Main - INFO -   Total iterations: 110800
+2026-01-21 13:58:46,007 - Main - INFO -   Iterations per epoch: 1108
+2026-01-21 13:58:46,007 - Main - INFO -   Validation every: 100 iterations
+2026-01-21 13:58:46,007 - Main - INFO -   Total validations: 1108
+2026-01-21 13:58:46,007 - Main - INFO - ======================================================================
+
+2026-01-21 13:58:46,007 - Main - INFO - Initializing MLO engine...
+Traceback (most recent call last):
+  File "train_mlo.py", line 562, in <module>
+    main()
+  File "train_mlo.py", line 531, in main
+    engine = MLOSkinLesionEngine(
+  File "train_mlo.py", line 161, in __init__
+    super().__init__(config, problems, dependencies)
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 63, in __init__
+    self.initialize()
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 128, in initialize
+    self.parse_config()
+  File "/home/ubuntu/anaconda3/envs/convnextv2/lib/python3.8/site-packages/betty/engine.py", line 69, in parse_config
+    self.train_iters = self.config.train_iters
+AttributeError: 'list' object has no attribute 'train_iters'

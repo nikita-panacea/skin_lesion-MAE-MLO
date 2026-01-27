@@ -1,0 +1,17 @@
+2026-01-20 13:57:27,515 - Main - INFO - Loading datasets...
+2026-01-20 13:57:27,525 - Main - INFO - Train samples: 40
+2026-01-20 13:57:27,525 - Main - INFO - Val samples: 3800
+2026-01-20 13:57:27,525 - Main - INFO - Test samples: 3800
+2026-01-20 13:57:27,525 - Main - INFO - Creating models...
+2026-01-20 13:57:29,256 - Main - INFO - Classifier parameters: {'total': 37029896, 'trainable': 37029896}
+Successfully loaded UNet from /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+UNet segmentation model loaded and frozen
+2026-01-20 13:57:29,500 - Main - INFO - Total iterations: 200
+2026-01-20 13:57:29,500 - Main - INFO - Iterations per epoch: 2
+2026-01-20 13:57:29,500 - Main - INFO - Validation every: 10 iterations
+Traceback (most recent call last):
+  File "train_mlo.py", line 534, in <module>
+    main()
+  File "train_mlo.py", line 451, in main
+    mae_problem = Level1_MAEReconstruction(
+TypeError: __init__() got an unexpected keyword argument 'device'

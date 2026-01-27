@@ -1,0 +1,158 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            2or1yqufgd7w61bojm8kzjv1590cuydd:
+                args:
+                    - --data_path
+                    - /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/
+                    - --use_seg_init
+                    - --seg_model_path
+                    - /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+                    - --epochs
+                    - "100"
+                    - --batch_size
+                    - "16"
+                    - --unroll_steps_mae
+                    - "2"
+                    - --unroll_steps_classifier
+                    - "1"
+                    - --unroll_steps_masking
+                    - "1"
+                    - --lr_mae
+                    - "1.5e-4"
+                    - --lr_classifier
+                    - "5e-4"
+                    - --lr_masking
+                    - "5e-5"
+                    - --wandb_mode
+                    - online
+                codePath: train_mlo.py
+                codePathLocal: train_mlo.py
+                cpu_count: 24
+                cpu_count_logical: 32
+                cudaVersion: "12.1"
+                disk:
+                    /:
+                        total: "1967317549056"
+                        used: "1791392215040"
+                executable: /home/ubuntu/anaconda3/envs/convnextv2/bin/python
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-a5098599-c5f3-77be-d7a6-3094bc893534
+                host: panacea-ml-learn
+                memory:
+                    total: "67121922048"
+                os: Linux-5.19.0-46-generic-x86_64-with-glibc2.17
+                program: train_mlo.py
+                python: CPython 3.8.20
+                root: /home/ubuntu/Documents/Nikita/lesion-classifier-MLO
+                startedAt: "2026-01-21T08:27:16.314245Z"
+                writerId: 2or1yqufgd7w61bojm8kzjv1590cuydd
+        m: []
+        python_version: 3.8.20
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 51
+                - 53
+                - 63
+            "2":
+                - 1
+                - 5
+                - 41
+                - 51
+                - 53
+                - 63
+            "3":
+                - 13
+                - 16
+            "4": 3.8.20
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
+batch_size:
+    value: 16
+data_path:
+    value: /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/
+decoder_depth:
+    value: 8
+decoder_dim:
+    value: 512
+device:
+    value: cuda
+encoder_depths:
+    value:
+        - 3
+        - 3
+        - 9
+        - 12
+encoder_dims:
+    value:
+        - 96
+        - 192
+        - 384
+        - 768
+epochs:
+    value: 100
+eval_freq:
+    value: 5
+img_size:
+    value: 224
+lambda_augmented:
+    value: 0.5
+lambda_cls:
+    value: 1
+lambda_rec:
+    value: 1
+lr_classifier:
+    value: 0.0005
+lr_mae:
+    value: 0.00015
+lr_masking:
+    value: 5e-05
+mask_ratio:
+    value: 0.75
+masking_hidden_dim:
+    value: 512
+num_classes:
+    value: 8
+num_workers:
+    value: 4
+output_dir:
+    value: ./checkpoints
+patch_size:
+    value: 16
+save_freq:
+    value: 10
+seed:
+    value: 42
+seg_model_path:
+    value: /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+train_samples:
+    value: 40
+unroll_steps_classifier:
+    value: 1
+unroll_steps_mae:
+    value: 2
+unroll_steps_masking:
+    value: 1
+use_seg_init:
+    value: true
+val_split:
+    value: 0.2
+wandb_mode:
+    value: online
+wandb_project:
+    value: skin-lesion-mlo
+warmup_epochs:
+    value: 5
+weight_decay:
+    value: 0.05
