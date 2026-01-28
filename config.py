@@ -1,3 +1,4 @@
+# config.py
 """
 Configuration for MAE-MLO training on skin lesions
 """

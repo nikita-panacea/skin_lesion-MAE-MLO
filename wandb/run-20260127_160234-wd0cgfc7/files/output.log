@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "train_mlo_skin.py", line 571, in <module>
+    main()
+  File "train_mlo_skin.py", line 299, in main
+    train_transform, val_transform = get_transforms(args.img_size)
+TypeError: cannot unpack non-iterable Compose object

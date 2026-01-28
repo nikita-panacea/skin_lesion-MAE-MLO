@@ -4,10 +4,15 @@
 UNet-initialized Masking Module
 Uses pretrained UNet segmentation masks to guide MAE masking
 
-FIXES:
-1. Proper gradient handling - no torch.no_grad() in forward
-2. Ensure all outputs require grad when needed
-3. Better integration with MLO framework
+CRITICAL FIXES FOR GRADIENT FLOW:
+1. Detach unet_importance before combining (it's from frozen UNet)
+2. Detach mask_prob BEFORE sorting (torch.argsort breaks gradients)
+3. Return ORIGINAL mask_prob (with gradients) for loss weighting
+4. Gradients flow through mask_prob weighting in reconstruction loss, NOT through sorting
+
+This follows MLO-MAE paper pattern (Eq. 1):
+Loss = Σ_j σ(M_j) * L_rec(M_j)
+Gradients flow through σ(M_j) = mask_prob, which contains learned_importance
 """
 import torch
 import torch.nn as nn
@@ -117,34 +122,42 @@ class UNetMaskingModule(nn.Module):
             x_masked: [B, N*(1-mask_ratio), D] - unmasked patches
             mask: [B, N] - binary mask (0=keep, 1=remove)
             ids_restore: [B, N] - indices to restore order
-            mask_prob: [B, N] - masking probabilities
+            mask_prob: [B, N] - masking probabilities (WITH gradients for MLO!)
         """
         B, N, D = patches.shape
         len_keep = int(N * (1 - mask_ratio))
         
-        if random:
-            # Random masking (baseline)
+        if random or not self.learnable or self.mask_refine is None:
+            # Random masking (baseline) or non-learnable mode
+            # Use random noise - no gradients needed
             noise = torch.rand(B, N, device=patches.device)
             mask_prob = noise
         else:
-            # UNet-guided masking
-            # Get UNet importance (no gradient from this)
+            # Learnable masking mode
+            # CRITICAL FIX: Proper gradient handling for MLO
+            
+            # Get UNet importance (no gradient - frozen UNet)
             seg_masks = self.get_unet_mask(images)
             unet_importance = self.mask_to_patch_importance(seg_masks)
             
-            # Refine with learnable network if enabled
-            if self.learnable and self.mask_refine is not None:
-                patches_flat = patches.flatten(1)  # [B, N*D]
-                learned_importance = self.mask_refine(patches_flat)  # [B, N]
-                
-                # Combine UNet and learned importance
-                # UNet provides strong prior (detached), learned refines it (with grad)
-                mask_prob = 0.7 * unet_importance.detach() + 0.3 * learned_importance
-            else:
-                mask_prob = unet_importance
+            # Get learned importance (HAS gradients from learnable network)
+            patches_flat = patches.flatten(1)  # [B, N*D]
+            learned_importance = self.mask_refine(patches_flat)  # [B, N]
+            
+            # FIX 1: Explicitly detach unet_importance (it's from frozen UNet anyway)
+            # This makes the combination cleaner - we only want gradients from learned part
+            mask_prob = 0.7 * unet_importance.detach() + 0.3 * learned_importance
+            
+            # Now mask_prob has gradients ONLY from learned_importance (which is correct!)
+        
+        # FIX 2: Detach mask_prob BEFORE sorting
+        # torch.argsort is non-differentiable, but we don't need gradients through sorting
+        # Gradients flow through mask_prob weighting in the loss, not through index selection
+        mask_prob_for_sort = mask_prob.detach() if mask_prob.requires_grad else mask_prob
         
         # Sort by importance (lower = more likely to mask)
-        ids_shuffle = torch.argsort(mask_prob, dim=1)
+        # Use detached version for sorting to avoid gradient issues
+        ids_shuffle = torch.argsort(mask_prob_for_sort, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
         
         # Keep least important patches visible (most important are masked)
@@ -163,4 +176,7 @@ class UNetMaskingModule(nn.Module):
         mask[:, :len_keep] = 0
         mask = torch.gather(mask, dim=1, index=ids_restore)
         
+        # FIX 3: Return ORIGINAL mask_prob (with gradients)
+        # This is used in reconstruction loss weighting where gradients DO flow
+        # Following MLO-MAE pattern: loss = loss * mask_prob (Eq. 1 in paper)
         return x_masked, mask, ids_restore, mask_prob

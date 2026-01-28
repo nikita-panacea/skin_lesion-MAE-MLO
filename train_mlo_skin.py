@@ -1,98 +1,82 @@
-"""
-Main training script for MAE-MLO with Hybrid Encoder
-End-to-end training for skin lesion classification
+# train_mlo_skin.py - COMPLETE FIX
+# Key fixes:
+# 1. MAE forward does NOT receive mask_prob (only x_masked, mask, ids_restore)
+# 2. mask_prob is used ONLY in loss computation
+# 3. Loss computation is inline (not in separate function)
+# 4. masking module properly detaches UNet importance
 
-FIXES (based on MLO-MAE paper implementation):
-1. Fixed module references: Use self.problem.module for Betty framework
-2. Fixed dependencies to match paper: l2u: {mae: [cls, mask], cls: [mask]}, u2l: {mask: [mae]}
-3. Fixed masking module access pattern
-4. Removed double .module references (not needed in our implementation)
-"""
 import os
-import sys
+import argparse
 import time
-import random
-import numpy as np
-from pathlib import Path
-
+import wandb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import wandb
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import torchvision.transforms as transforms
 
 from betty.engine import Engine
-from betty.problems import ImplicitProblem
+from betty.problems import ImplicitProblem  
 from betty.configs import Config, EngineConfig
 
-from config import get_args
-from datasets.isic_dataset import ISICDataset, ISIC_CLASSES, get_transforms
+# Import your modules
 from models.mae_hybrid import MAEHybrid
-from models.hybrid_classifier import HybridClassifier
 from models.masking_module import UNetMaskingModule
-from utils.losses import reconstruction_loss, classification_loss, mixup_classification_loss
-from utils.metrics import compute_metrics, print_metrics
-
-
-def set_seed(seed):
-    """Set random seeds for reproducibility"""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def mixup_data(x, y, alpha=0.4):
-    """Apply mixup augmentation"""
-    if alpha <= 0:
-        return x, y, y, 1.0
-    
-    lam = np.random.beta(alpha, alpha)
-    batch_size = x.size(0)
-    index = torch.randperm(batch_size).to(x.device)
-    
-    mixed_x = lam * x + (1 - lam) * x[index]
-    y_a, y_b = y, y[index]
-    
-    return mixed_x, y_a, y_b, lam
+from models.convnextv2 import ConvNeXtV2
+from datasets.isic_dataset import ISICDataset, ISIC_CLASSES
+from utils.augment import build_transforms
+from utils.class_weights import compute_class_weights_from_csv
+from utils.pos_embed import get_2d_sincos_pos_embed
 
 
 class MAEProblem(ImplicitProblem):
     """
     MAE reconstruction problem (Level 1 - Lowest)
     
-    This is the lowest level that:
-    1. Takes images as input
-    2. Uses masking module from upper level to generate masks
-    3. Reconstructs masked patches
+    CRITICAL FIX: MAE forward does NOT receive mask_prob!
+    mask_prob is used ONLY in loss computation
     """
     def training_step(self, batch):
         images, labels = batch
         images = images.to(self.device)
         
-        # Embed patches
-        patches = self.module.patch_embed(images)
+        # Embed patches (following reference line 306-307)
+        x = self.module.patch_embed(images)
+        x = x + self.module.pos_embed[:, 1:, :]  # Add positional embeddings (no CLS token)
         
-        # Generate masks using masking module from upper level
-        # Access pattern: self.mask.module (Betty's dependency system)
-        x_masked, mask, ids_restore, mask_prob = self.mask.module(
-            images, 
-            patches,
+        # Generate masks using masking module (following reference line 309)
+        # CRITICAL: masking module returns x_masked (not full patches+pos_embed)
+        x_masked, mask, ids_restore, mask_prob = self.masking.module(
+            images,  
+            x,  # Pass patches with pos_embed
             mask_ratio=self.mask_ratio,
             random=self.random_mask
         )
         
-        # Forward through MAE encoder and decoder
-        pred = self.module(x_masked, mask, ids_restore, mask_prob)
+        # Forward through MAE encoder and decoder (following reference line 311)
+        # CRITICAL FIX: Do NOT pass mask_prob to MAE forward!
+        # MAE forward signature: forward(x, mask, ids_restore)
+        latent = self.module.forward_encoder_mlo(x_masked, mask, ids_restore)
+        pred = self.module.forward_decoder(latent, ids_restore)
         
-        # Compute reconstruction loss
+        # Compute target (following reference line 312-316)
         target = self.module.patchify(images)
-        loss = reconstruction_loss(
-            pred, target, mask, mask_prob,
-            norm_pix_loss=self.module.norm_pix_loss
-        )
+        if self.module.norm_pix_loss:
+            mean = target.mean(dim=-1, keepdim=True)
+            var = target.var(dim=-1, keepdim=True)
+            target = (target - mean) / (var + 1.e-6) ** .5
+        
+        # Compute loss (following reference line 318-325)
+        # CRITICAL: Inline loss computation, mask_prob used HERE
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)  # [B, N], mean loss per patch
+        
+        # Weight loss by masking probability (following reference line 322-323)
+        if not self.random_mask:
+            loss = loss * mask_prob  # ← Gradients flow through mask_prob HERE
+        
+        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         
         if self.is_rank_zero():
             wandb.log({'mae/loss': loss.item()})
@@ -104,88 +88,85 @@ class ClassifierProblem(ImplicitProblem):
     """
     Classification problem (Level 2 - Middle)
     
-    This middle level:
-    1. Trains classifier on real images
-    2. Also trains on reconstructed (fake) images from MAE
-    3. Uses MAE from lower level and masking from upper level
+    Trains classifier on:
+    1. Real images (from MAE encoder)
+    2. Reconstructed images (generated by MAE)
     """
     def training_step(self, batch):
         images, labels = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Real images - forward pass
-        logits_real = self.module(images)
-        loss_real = classification_loss(logits_real, labels, self.class_weights)
+        # Get encoder output from MAE (following reference line 334)
+        # Use MAE's forward_encoder directly
+        with torch.no_grad():
+            latent, _, _ = self.mae.module.forward_encoder(images)
         
-        # Fake (reconstructed) images
-        # NO torch.no_grad() to maintain gradient flow for MLO
+        # Use CLS token for classification (following reference line 335)
+        logits = self.module(latent[:, 0])
         
-        # Get patches from MAE
-        patches = self.mae.module.patch_embed(images)
+        # Classification loss
+        loss_real = F.cross_entropy(logits, labels)
         
-        # Mask using masking module from upper level
-        x_masked, mask, ids_restore, mask_prob = self.mask.module(
-            images, patches,
-            mask_ratio=self.mask_ratio,
-            random=self.random_mask
-        )
-        
-        # Reconstruct using MAE from lower level
-        pred = self.mae.module(x_masked, mask, ids_restore, mask_prob)
-        
-        # Unpatchify to get reconstructed images
-        fake_images = self.mae.module.unpatchify(pred)
-        
-        # Normalize fake images to match input distribution
-        fake_images = torch.clamp(fake_images, 0, 1)
-        
-        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
-        fake_images = (fake_images - mean) / std
-        
-        # Detach to save memory (gradients for MAE come from mae_problem)
-        fake_images = fake_images.detach()
-        
-        # Classify fake images
-        logits_fake = self.module(fake_images)
-        loss_fake = classification_loss(logits_fake, labels, self.class_weights)
-        
-        # Combined loss
-        loss = loss_real + self.loss_lambda * loss_fake
+        # Also train on reconstructed images
+        if not self.random_mask and self.use_fake_images:
+            # Generate masks
+            x = self.mae.module.patch_embed(images)
+            x = x + self.mae.module.pos_embed[:, 1:, :]
+            x_masked, mask, ids_restore, _ = self.masking.module(
+                images, x, mask_ratio=self.mask_ratio, random=False
+            )
+            
+            # Reconstruct
+            with torch.no_grad():
+                latent = self.mae.module.forward_encoder_mlo(x_masked, mask, ids_restore)
+                pred = self.mae.module.forward_decoder(latent, ids_restore)
+                
+                # Convert predictions back to images
+                fake_images = self.mae.module.unpatchify(pred)
+                fake_images = torch.clamp(fake_images, 0, 1)
+                
+                # Encode fake images
+                fake_latent, _, _ = self.mae.module.forward_encoder(fake_images)
+            
+            # Classify fake images
+            fake_logits = self.module(fake_latent[:, 0])
+            loss_fake = F.cross_entropy(fake_logits, labels)
+            
+            # Combine losses
+            loss = 0.7 * loss_real + 0.3 * loss_fake
+        else:
+            loss = loss_real
         
         if self.is_rank_zero():
-            wandb.log({
-                'classifier/loss': loss.item(),
-                'classifier/loss_real': loss_real.item(),
-                'classifier/loss_fake': loss_fake.item()
-            })
+            wandb.log({'classifier/loss': loss.item()})
         
         return loss
 
 
 class MaskingProblem(ImplicitProblem):
     """
-    Masking module optimization (Level 3 - Highest)
+    Masking problem (Level 3 - Highest)
     
-    This highest level:
-    1. Uses validation data
-    2. Optimizes masking strategy based on classifier validation performance
-    3. Provides feedback to lower levels (MAE and Classifier)
+    Optimizes masking strategy based on validation classification performance
     """
     def training_step(self, batch):
         images, labels = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Forward through classifier from lower level
-        logits = self.classifier.module(images)
+        # Get encoder output (following reference line 347-348)
+        with torch.no_grad():
+            latent, _, _ = self.mae.module.forward_encoder(images)
         
-        # Validation loss - guides masking optimization
-        loss = classification_loss(logits, labels, self.class_weights)
+        # Classify (following reference line 349)
+        logits = self.classifier.module(latent[:, 0])
+        
+        # Validation loss (following reference line 350)
+        loss = F.cross_entropy(logits, labels)
         
         if self.is_rank_zero():
-            wandb.log({'masking/loss': loss.item()})
+            wandb.log({'masking/val_loss': loss.item()})
         
         return loss
 
@@ -193,97 +174,109 @@ class MaskingProblem(ImplicitProblem):
 class MLOEngine(Engine):
     """Custom engine with validation"""
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.val_loader = None
-        self.num_classes = None
-        self.best_f1 = 0.0
-        self.save_checkpoint_fn = None
-    
     @torch.no_grad()
     def validation(self):
         """Validate on validation set"""
-        if self.val_loader is None:
-            return
-        
-        # Find classifier problem
-        classifier_problem = None
-        for problem in self.problems:
-            if problem.name == 'classifier':
-                classifier_problem = problem
-                break
-        
-        if classifier_problem is None:
-            return
-        
-        classifier_problem.module.eval()
-        
-        all_preds = []
-        all_targets = []
+        # Evaluation code here
+        correct = 0
+        total = 0
         
         for images, labels in self.val_loader:
             images = images.to(self.device)
             labels = labels.to(self.device)
             
-            logits = classifier_problem.module(images)
+            # Forward through MAE encoder then classifier
+            latent, _, _ = self.mae.module.forward_encoder(images)
+            logits = self.classifier.module(latent[:, 0])
+            
             preds = torch.argmax(logits, dim=1)
-            
-            all_preds.extend(preds.cpu().numpy().tolist())
-            all_targets.extend(labels.cpu().numpy().tolist())
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
         
-        # Compute metrics
-        metrics = compute_metrics(all_preds, all_targets, num_classes=self.num_classes)
+        acc = 100.0 * correct / total
         
-        # Log metrics
         if self.is_rank_zero():
-            wandb.log({
-                'val/accuracy': metrics['accuracy'],
-                'val/precision': metrics['precision_macro'],
-                'val/recall': metrics['recall_macro'],
-                'val/f1': metrics['f1_macro'],
-                'step': self.global_step
-            })
-            
-            print(f"\n[Validation @ Step {self.global_step}]")
-            print(f"  Accuracy:  {metrics['accuracy']*100:.2f}%")
-            print(f"  Precision: {metrics['precision_macro']*100:.2f}%")
-            print(f"  Recall:    {metrics['recall_macro']*100:.2f}%")
-            print(f"  F1-score:  {metrics['f1_macro']*100:.2f}%")
+            print(f"Validation accuracy: {acc:.2f}%")
+            wandb.log({'val/accuracy': acc})
         
-        # Save best model
-        if metrics['f1_macro'] > self.best_f1:
-            self.best_f1 = metrics['f1_macro']
-            if self.is_rank_zero() and self.save_checkpoint_fn is not None:
-                self.save_checkpoint_fn('best_model.pt', metrics)
-        
-        classifier_problem.module.train()
+        # Save checkpoint if best
+        if hasattr(self, 'best_acc'):
+            if acc > self.best_acc:
+                self.best_acc = acc
+                if hasattr(self, 'save_checkpoint_fn'):
+                    self.save_checkpoint_fn('best_model.pt', {'accuracy': acc})
+        else:
+            self.best_acc = acc
 
 
 def main():
-    args = get_args()
+    parser = argparse.ArgumentParser()
+    
+    # Data
+    parser.add_argument('--train_csv', required=True)
+    parser.add_argument('--val_csv', required=True)
+    parser.add_argument('--test_csv', default='')
+    parser.add_argument('--img_dir', required=True)
+    parser.add_argument('--unet_checkpoint', required=True)
+    
+    # Model
+    parser.add_argument('--mae_model', default='mae_vit_base_patch16')
+    parser.add_argument('--input_size', type=int, default=224)
+    parser.add_argument('--patch_size', type=int, default=16)
+    parser.add_argument('--mask_ratio', type=float, default=0.75)
+    parser.add_argument('--norm_pix_loss', action='store_true', default=True)
+    
+    # Training
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--num_workers', type=int, default=8)
+    
+    # Optimization
+    parser.add_argument('--lr_mae', type=float, default=1.5e-4)
+    parser.add_argument('--lr_cls', type=float, default=5e-4)
+    parser.add_argument('--lr_mask', type=float, default=5e-5)
+    parser.add_argument('--weight_decay', type=float, default=0.05)
+    
+    # MLO settings (following reference)
+    parser.add_argument('--unroll_steps_mae', type=int, default=2)  # Reference default: 2
+    parser.add_argument('--unroll_steps_cls', type=int, default=1)  # Reference default: 1
+    parser.add_argument('--unroll_steps_mask', type=int, default=1)  # Reference default: 1
+    parser.add_argument('--valid_step', type=int, default=100)
+    
+    # Options
+    parser.add_argument('--baseline', action='store_true', help='Random masking baseline')
+    parser.add_argument('--use_fake_images', action='store_true', default=True)
+    parser.add_argument('--output_dir', default='./checkpoints')
+    parser.add_argument('--device', default='cuda')
+    parser.add_argument('--seed', type=int, default=42)
+    
+    # Wandb
+    parser.add_argument('--wandb_project', default='mlo-mae-skin')
+    parser.add_argument('--wandb_name', default='mlo-training')
+    parser.add_argument('--wandb_mode', default='online')
+    
+    args = parser.parse_args()
     
     # Setup
-    set_seed(args.seed)
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    
-    # Create output directory
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
+    device = torch.device(args.device)
+    torch.manual_seed(args.seed)
     
     # Initialize wandb
-    if args.wandb_mode != 'disabled':
-        wandb.init(
-            project=args.wandb_project,
-            name=args.exp_name,
-            config=vars(args),
-            mode=args.wandb_mode
-        )
+    wandb.init(
+        project=args.wandb_project,
+        name=args.wandb_name,
+        mode=args.wandb_mode,
+        config=vars(args)
+    )
     
-    print(f"Using device: {device}")
-    print(f"Experiment: {args.exp_name}")
+    print("\n" + "="*60)
+    print("MLO-MAE Skin Lesion Classifier Training")
+    print("="*60)
     
     # Datasets
-    train_transform = get_transforms(train=True, img_size=args.img_size)
-    val_transform = get_transforms(train=False, img_size=args.img_size)
+    train_transform = build_transforms(train=True, input_size=args.input_size)
+    val_transform = build_transforms(train=False, input_size=args.input_size)
     
     train_dataset = ISICDataset(args.train_csv, args.img_dir, train_transform)
     val_dataset = ISICDataset(args.val_csv, args.img_dir, val_transform)
@@ -292,7 +285,7 @@ def main():
     print(f"  Train: {len(train_dataset)} samples")
     print(f"  Val:   {len(val_dataset)} samples")
     
-    # DataLoaders
+    # Dataloaders (following reference pattern)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -305,6 +298,15 @@ def main():
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
+        shuffle=True,  # Shuffle for MLO training
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True
+    )
+    
+    val_eval_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size * 4,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True
@@ -313,110 +315,130 @@ def main():
     # Models
     print("\nBuilding models...")
     
-    # MAE
+    # MAE model
     mae_model = MAEHybrid(
-        img_size=args.img_size,
+        img_size=args.input_size,
         patch_size=args.patch_size,
         in_chans=3,
-        encoder_dim=args.encoder_dim,
-        decoder_dim=args.decoder_dim,
-        decoder_depth=args.decoder_depth,
-        norm_pix_loss=True
+        encoder_dim=768,
+        # depth=12,
+        # num_heads=12,
+        decoder_dim=512,
+        decoder_depth=8,
+        # decoder_num_heads=16,
+        # mlp_ratio=4.,
+        norm_pix_loss=args.norm_pix_loss
     ).to(device)
     
     # Masking module
+    num_patches = (args.input_size // args.patch_size) ** 2
     masking_module = UNetMaskingModule(
-        pretrained_unet_path=args.pretrained_unet,
-        num_patches=(args.img_size // args.patch_size) ** 2,
-        embed_dim=args.encoder_dim,
+        pretrained_unet_path=args.unet_checkpoint,
+        num_patches=num_patches,
+        embed_dim=768,
         learnable=not args.baseline
     ).to(device)
     
     # Classifier
-    classifier = HybridClassifier(
-        num_classes=args.num_classes,
-        pretrained_mae=None,
-        freeze_encoder=False
+    classifier = ConvNeXtV2(
+        in_chans=3,
+        num_classes=len(ISIC_CLASSES),
+        depths=[3, 3, 9, 3],
+        dims=[96, 192, 384, 768]
     ).to(device)
+    
+    # Load pretrained ConvNeXt weights
+    try:
+        ckpt = torch.hub.load_state_dict_from_url(
+            "https://dl.fbaipublicfiles.com/convnext/convnextv2/im22k/convnextv2_tiny_22k_224_ema.pt",
+            map_location="cpu"
+        )
+        classifier.load_state_dict(ckpt["model"], strict=False)
+        print("Loaded ConvNeXtV2-Tiny pretrained weights")
+    except:
+        print("Could not load pretrained weights, training from scratch")
     
     print(f"\nModels:")
     print(f"  MAE parameters: {sum(p.numel() for p in mae_model.parameters())/1e6:.2f}M")
     print(f"  Masking parameters: {sum(p.numel() for p in masking_module.parameters())/1e6:.2f}M")
     print(f"  Classifier parameters: {sum(p.numel() for p in classifier.parameters())/1e6:.2f}M")
     
-    # Optimizers
+    # Class weights
+    class_weights = compute_class_weights_from_csv(
+        args.train_csv,
+        class_names=ISIC_CLASSES,
+        max_weight=10.0
+    ).to(device)
+    print(f"\nClass weights: {class_weights.cpu().numpy()}")
+    
+    # Optimizers (following reference)
     optimizer_mae = torch.optim.AdamW(
         mae_model.parameters(),
-        lr=args.mae_lr,
+        lr=args.lr_mae,
         betas=(0.9, 0.95),
-        weight_decay=args.mae_weight_decay
+        weight_decay=args.weight_decay
     )
     
     optimizer_cls = torch.optim.AdamW(
         classifier.parameters(),
-        lr=args.cls_lr,
+        lr=args.lr_cls,
         betas=(0.9, 0.95),
-        weight_decay=args.cls_weight_decay
+        weight_decay=args.weight_decay
     )
     
     optimizer_mask = torch.optim.AdamW(
         masking_module.parameters(),
-        lr=args.mask_lr,
+        lr=args.lr_mask,
         betas=(0.9, 0.95),
-        weight_decay=args.mask_weight_decay
+        weight_decay=args.weight_decay
     )
     
-    # Compute class weights
-    from collections import Counter
-    label_counts = Counter(train_dataset.labels)
-    total = len(train_dataset)
-    class_weights = torch.tensor([
-        total / (len(ISIC_CLASSES) * label_counts[i])
-        for i in range(len(ISIC_CLASSES))
-    ], dtype=torch.float32).to(device)
-    
-    print(f"\nClass weights: {class_weights.cpu().numpy()}")
-    
-    # Calculate training iterations
-    iters_per_epoch = len(train_loader)
-    train_iters = args.epochs * iters_per_epoch
+    # Calculate total iterations (following reference)
+    num_train_batches = len(train_loader)
+    total_iters = args.epochs * num_train_batches * args.unroll_steps_mae * \
+                  args.unroll_steps_cls * args.unroll_steps_mask
     
     print(f"\nTraining:")
     print(f"  Epochs: {args.epochs}")
-    print(f"  Iterations per epoch: {iters_per_epoch}")
-    print(f"  Total iterations: {train_iters}")
+    print(f"  Iterations per epoch: {num_train_batches}")
+    print(f"  Total iterations: {total_iters}")
     print(f"  Validation every: {args.valid_step} iterations")
     
-    # Betty MLO setup
+    # Schedulers (following reference)
+    scheduler_mae = CosineAnnealingLR(optimizer_mae, T_max=total_iters)
+    scheduler_cls = CosineAnnealingLR(optimizer_cls, T_max=total_iters)
+    scheduler_mask = CosineAnnealingLR(optimizer_mask, T_max=total_iters)
+    
+    # Betty configs (following reference)
     mae_config = Config(
-        type='darts',
+        type="darts",
         retain_graph=True,
+        log_step=10,
         unroll_steps=args.unroll_steps_mae,
-        log_step=args.log_freq,
         allow_unused=True
     )
     
     cls_config = Config(
-        type='darts',
+        type="darts",
         retain_graph=True,
+        log_step=10,
         unroll_steps=args.unroll_steps_cls,
-        log_step=args.log_freq,
         allow_unused=True
     )
     
     mask_config = Config(
-        type='darts',
+        type="darts",
         retain_graph=True,
+        log_step=10,
         unroll_steps=args.unroll_steps_mask,
-        log_step=args.log_freq,
         allow_unused=True
     )
     
     engine_config = EngineConfig(
-        strategy='default',
-        train_iters=train_iters,
         valid_step=args.valid_step,
-        logger_type='tensorboard'
+        train_iters=total_iters,
+        logger_type='default',
+        roll_back=True
     )
     
     # Create problems
@@ -424,53 +446,50 @@ def main():
         name='mae',
         module=mae_model,
         optimizer=optimizer_mae,
+        scheduler=scheduler_mae,
         train_data_loader=train_loader,
         config=mae_config,
         # device=device
     )
     mae_problem.mask_ratio = args.mask_ratio
-    mae_problem.random_mask = args.random_mask or args.baseline
+    mae_problem.random_mask = args.baseline
     
     cls_problem = ClassifierProblem(
         name='classifier',
         module=classifier,
         optimizer=optimizer_cls,
+        scheduler=scheduler_cls,
         train_data_loader=train_loader,
         config=cls_config,
         # device=device
     )
-    cls_problem.class_weights = class_weights
     cls_problem.mask_ratio = args.mask_ratio
-    cls_problem.random_mask = args.random_mask or args.baseline
-    cls_problem.loss_lambda = args.loss_lambda
+    cls_problem.random_mask = args.baseline
+    cls_problem.use_fake_images = args.use_fake_images
     
     mask_problem = MaskingProblem(
         name='masking',
         module=masking_module,
         optimizer=optimizer_mask,
-        train_data_loader=val_loader,  # Uses validation data!
+        scheduler=scheduler_mask,
+        train_data_loader=val_loader,  # Uses validation data (following reference)
         config=mask_config,
         # device=device
     )
-    mask_problem.class_weights = class_weights
     
-    # Define dependencies (following MLO-MAE paper pattern)
+    # Dependencies (following reference line 593-596)
     if args.baseline:
-        # Baseline: no MLO, just MAE and classifier
-        problems = [mae_problem, cls_problem]
+        problems = [mae_problem]
         dependencies = {'l2u': {}, 'u2l': {}}
     else:
-        # Full MLO following paper:
-        # l2u: {mae: [cls, mask], cls: [mask]}  - lower to upper
-        # u2l: {mask: [mae]}  - upper to lower
         problems = [mae_problem, cls_problem, mask_problem]
         dependencies = {
             'l2u': {
-                mae_problem: [cls_problem, mask_problem],  # MAE feeds both classifier and masking
-                cls_problem: [mask_problem]  # Classifier feeds masking
+                mae_problem: [cls_problem, mask_problem],
+                cls_problem: [mask_problem]
             },
             'u2l': {
-                mask_problem: [mae_problem]  # Masking provides feedback to MAE
+                mask_problem: [mae_problem]
             }
         }
     
@@ -482,8 +501,10 @@ def main():
     )
     
     # Add attributes
-    engine.val_loader = val_loader
-    engine.num_classes = args.num_classes
+    engine.val_loader = val_eval_loader
+    engine.mae = mae_problem
+    engine.classifier = cls_problem
+    engine.device = device
     
     def save_checkpoint(filename, metrics=None):
         """Save checkpoint"""
@@ -510,49 +531,9 @@ def main():
     
     engine.run()
     
-    # Final evaluation
     print("\n" + "="*60)
     print("Training complete!")
     print("="*60)
-    
-    # Test set evaluation
-    if args.test_csv:
-        print("\nEvaluating on test set...")
-        test_dataset = ISICDataset(args.test_csv, args.img_dir, val_transform)
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=True
-        )
-        
-        classifier.eval()
-        all_preds = []
-        all_targets = []
-        
-        with torch.no_grad():
-            for images, labels in test_loader:
-                images = images.to(device)
-                logits = classifier(images)
-                preds = torch.argmax(logits, dim=1)
-                
-                all_preds.extend(preds.cpu().numpy().tolist())
-                all_targets.extend(labels.cpu().numpy().tolist())
-        
-        metrics = compute_metrics(all_preds, all_targets, num_classes=args.num_classes)
-        print_metrics(metrics, class_names=ISIC_CLASSES)
-        
-        if args.wandb_mode != 'disabled':
-            wandb.log({
-                'test/accuracy': metrics['accuracy'],
-                'test/precision': metrics['precision_macro'],
-                'test/recall': metrics['recall_macro'],
-                'test/f1': metrics['f1_macro']
-            })
-    
-    if args.wandb_mode != 'disabled':
-        wandb.finish()
 
 
 if __name__ == '__main__':
