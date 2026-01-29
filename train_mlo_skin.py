@@ -157,27 +157,64 @@ class ClassifierProblem(ImplicitProblem):
         return loss
 
 
+# class MaskingProblem(ImplicitProblem):
+#     """
+#     Masking problem (Level 3 - Highest)
+    
+#     Optimizes masking strategy based on validation classification performance
+#     """
+#     def training_step(self, batch):
+#         images, labels = batch
+#         images = images.to(self.device)
+#         labels = labels.to(self.device)
+        
+#         # Classify using hybrid classifier
+#         logits = self.classifier.module.forward(images)
+        
+#         # Validation loss
+#         loss = F.cross_entropy(logits, labels)
+        
+#         if self.is_rank_zero():
+#             wandb.log({'masking/val_loss': loss.item()})
+        
+#         return loss
+    
 class MaskingProblem(ImplicitProblem):
     """
-    Masking problem (Level 3 - Highest)
-    
-    Optimizes masking strategy based on validation classification performance
+    Upper-level problem (Level 3)
+
+    Validation loss MUST depend on masking parameters.
     """
+
     def training_step(self, batch):
         images, labels = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
-        
-        # Classify using hybrid classifier
-        logits = self.classifier.module.forward(images)
-        
-        # Validation loss
+
+        # --- MAE-style masking ---
+        x = self.mae.module.patch_embed(images)
+        x = x + self.mae.module.pos_embed[:, 1:, :].detach()
+
+        x_masked, mask, ids_restore, mask_prob = self.module(
+            images,
+            x,
+            mask_ratio=self.mae.mask_ratio,
+            random=False
+        )
+
+        # --- MAE reconstruction ---
+        pred = self.mae.module.forward(x_masked, mask, ids_restore)
+        recon_images = self.mae.module.unpatchify(pred).detach()
+
+        # --- Classification on reconstructed images ---
+        logits = self.classifier.module.forward(recon_images)
         loss = F.cross_entropy(logits, labels)
-        
+
         if self.is_rank_zero():
             wandb.log({'masking/val_loss': loss.item()})
-        
+
         return loss
+
 
 
 class MLOEngine(Engine):
