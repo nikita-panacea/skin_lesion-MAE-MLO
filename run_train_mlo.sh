@@ -13,6 +13,8 @@
 # echo "Dimension tests passed! Starting training..."
 # echo ""
 
+# run_train_mlo.sh
+
 python train_mlo_skin.py \
     --train_csv /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/train.csv \
     --val_csv /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/val.csv \
@@ -33,17 +35,3 @@ python train_mlo_skin.py \
     --wandb_mode online \
     --num_workers 8 \
     --device cuda
-
-#     --loss_lambda 1.0 \,     --log_freq 10 \,     --exp_name mlo_hybrid_mae \
-
-# usage: train_mlo_skin.py [-h] 
-# --train_csv TRAIN_CSV --val_csv VAL_CSV [--test_csv TEST_CSV] --img_dir IMG_DIR 
-# --unet_checkpoint UNET_CHECKPOINT [--mae_model MAE_MODEL] [--input_size INPUT_SIZE]
-# [--patch_size PATCH_SIZE] [--mask_ratio MASK_RATIO] [--norm_pix_loss] [--epochs EPOCHS] 
-# [--batch_size BATCH_SIZE] [--num_workers NUM_WORKERS] [--lr_mae LR_MAE]
-# [--lr_cls LR_CLS] [--lr_mask LR_MASK] [--weight_decay WEIGHT_DECAY] 
-# [--unroll_steps_mae UNROLL_STEPS_MAE] [--unroll_steps_cls UNROLL_STEPS_CLS]
-# [--unroll_steps_mask UNROLL_STEPS_MASK] [--valid_step VALID_STEP] [--baseline] [--use_fake_images] 
-# [--output_dir OUTPUT_DIR] [--device DEVICE] [--seed SEED]
-# [--wandb_project WANDB_PROJECT] [--wandb_name WANDB_NAME] [--wandb_mode WANDB_MODE]
-# train_mlo_skin.py: error: the following arguments are required: --unet_checkpoint

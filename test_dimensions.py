@@ -1,9 +1,16 @@
+# test_dimensions.py - FIXED VERSION
 """
 Test script to verify model dimensions and architecture
+
+CRITICAL FIX:
+- MAE forward signature: forward(x_masked, mask, ids_restore) - NO mask_prob parameter
+- mask_prob is used only in loss computation for gradient flow
 """
 import torch
+import sys
+sys.path.append('.')
 from models.mae_hybrid import MAEHybrid
-from models.hybrid_classifier import HybridClassifier
+from models.hybrid_model import HybridConvNeXtV2
 from models.masking_module import UNetMaskingModule
 
 
@@ -38,6 +45,9 @@ def test_mae():
     patches = mae.patch_embed(images)
     print(f"Patches shape: {patches.shape}")
     
+    # Add pos_embed (this is done in training script)
+    patches = patches + mae.pos_embed[:, 1:, :]
+    
     # Create dummy masking
     num_patches = patches.shape[1]
     len_keep = int(num_patches * (1 - mask_ratio))
@@ -61,18 +71,26 @@ def test_mae():
     
     print(f"Masked patches shape: {x_masked.shape}")
     print(f"Mask shape: {mask.shape}")
+    print(f"Mask prob shape: {mask_prob.shape}")
     
     # Forward pass
+    # CRITICAL: MAE forward takes only 3 arguments: (x_masked, mask, ids_restore)
+    # NO mask_prob parameter!
     try:
-        pred = mae(x_masked, mask, ids_restore, mask_prob)
+        pred = mae(x_masked, mask, ids_restore)  # ← Only 3 arguments
         print(f"Prediction shape: {pred.shape}")
         
         # Test reconstruction loss
         target = mae.patchify(images)
         print(f"Target shape: {target.shape}")
         
+        # Compute loss (mask_prob used HERE for gradient flow)
         loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)
+        loss = loss.mean(dim=-1)  # [B, N]
+        
+        # Weight by mask_prob (gradients flow through masking module)
+        loss = loss * mask_prob  # ← mask_prob used in LOSS, not in forward
+        
         loss = (loss * mask).sum() / mask.sum()
         print(f"Loss: {loss.item():.4f}")
         
@@ -81,6 +99,8 @@ def test_mae():
         
     except Exception as e:
         print(f"✗ MAE test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -95,10 +115,9 @@ def test_classifier():
     num_classes = 8
     
     # Create model
-    classifier = HybridClassifier(
+    classifier = HybridConvNeXtV2(
         num_classes=num_classes,
-        pretrained_mae=None,
-        freeze_encoder=False
+        pretrained=False  # Skip pretrained for test
     )
     
     # Create dummy input
@@ -114,15 +133,13 @@ def test_classifier():
         assert logits.shape == (batch_size, num_classes), \
             f"Shape mismatch: got {logits.shape}, expected ({batch_size}, {num_classes})"
         
-        # Test feature extraction
-        features = classifier.extract_features(images)
-        print(f"Features shape: {features.shape}")
-        
         print("✓ Classifier test PASSED")
         return True
         
     except Exception as e:
         print(f"✗ Classifier test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -176,6 +193,8 @@ def test_masking():
         
     except Exception as e:
         print(f"✗ Masking test FAILED: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -202,10 +221,9 @@ def test_end_to_end():
         norm_pix_loss=True
     )
     
-    classifier = HybridClassifier(
+    classifier = HybridConvNeXtV2(
         num_classes=num_classes,
-        pretrained_mae=None,
-        freeze_encoder=False
+        pretrained=False
     )
     
     masking = UNetMaskingModule(
@@ -225,28 +243,33 @@ def test_end_to_end():
     try:
         # Step 1: MAE reconstruction
         patches = mae.patch_embed(images)
+        patches = patches + mae.pos_embed[:, 1:, :]  # Add pos_embed
+        
         x_masked, mask, ids_restore, mask_prob = masking(
             images, patches, mask_ratio=mask_ratio, random=False
         )
-        pred = mae(x_masked, mask, ids_restore, mask_prob)
+        
+        # CRITICAL: Only 3 arguments to MAE forward!
+        pred = mae(x_masked, mask, ids_restore)  # ← NO mask_prob
         
         print(f"Step 1 - Reconstruction: {pred.shape}")
+        
+        # Compute loss with mask_prob
+        target = mae.patchify(images)
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)
+        loss = loss * mask_prob  # ← mask_prob used HERE
+        loss = (loss * mask).sum() / mask.sum()
+        print(f"Step 1 - Loss: {loss.item():.4f}")
         
         # Step 2: Classification on real images
         logits_real = classifier(images)
         print(f"Step 2 - Real classification: {logits_real.shape}")
         
-        # Step 3: Classification on reconstructed images
-        fake_images = mae.unpatchify(pred)
-        fake_images = torch.clamp(fake_images, 0, 1)
-        
-        # Apply normalization
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        fake_images = (fake_images - mean) / std
-        
-        logits_fake = classifier(fake_images)
-        print(f"Step 3 - Fake classification: {logits_fake.shape}")
+        # Step 3: Classification loss
+        import torch.nn.functional as F
+        cls_loss = F.cross_entropy(logits_real, labels)
+        print(f"Step 3 - Classification loss: {cls_loss.item():.4f}")
         
         print("✓ End-to-end test PASSED")
         return True
@@ -261,7 +284,7 @@ def test_end_to_end():
 def main():
     """Run all tests"""
     print("\n" + "="*60)
-    print("MODEL DIMENSION VERIFICATION")
+    print("MODEL DIMENSION VERIFICATION - FIXED VERSION")
     print("="*60)
     
     results = []

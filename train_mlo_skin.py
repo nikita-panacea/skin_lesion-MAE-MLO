@@ -1,10 +1,14 @@
-# train_mlo_skin.py - COMPLETE FIX
-# Key fixes:
-# 1. MAE forward does NOT receive mask_prob (only x_masked, mask, ids_restore)
-# 2. mask_prob is used ONLY in loss computation
-# 3. Loss computation is inline (not in separate function)
-# 4. masking module properly detaches UNet importance
+# train_mlo_skin.py
+"""
+MLO-MAE Training for Skin Lesion Classification
 
+CRITICAL FIXES:
+
+2. Module access: self.module.X() for methods
+3. MAE forward signature: forward(x_masked, mask, ids_restore) - NO mask_prob
+4. mask_prob used ONLY in loss computation (for gradient flow)
+5. Proper ISIC dataset loading from CSV
+"""
 import os
 import argparse
 import time
@@ -14,28 +18,73 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import torchvision.transforms as transforms
 
 from betty.engine import Engine
 from betty.problems import ImplicitProblem  
 from betty.configs import Config, EngineConfig
 
-# Import your modules
+# Import dataset
+from datasets.isic_dataset import ISICDataset, ISIC_CLASSES
+
+# Import models
+import sys
+sys.path.append('.')
 from models.mae_hybrid import MAEHybrid
 from models.masking_module import UNetMaskingModule
-from models.convnextv2 import ConvNeXtV2
-from datasets.isic_dataset import ISICDataset, ISIC_CLASSES
-from utils.augment import build_transforms
-from utils.class_weights import compute_class_weights_from_csv
-from utils.pos_embed import get_2d_sincos_pos_embed
+from models.hybrid_model import HybridConvNeXtV2
+
+
+def build_transforms(train=True, input_size=224, deterministic=False):
+    """Build transforms"""
+    import torchvision.transforms as transforms
+    if train and not deterministic:
+        return transforms.Compose([
+            transforms.RandomResizedCrop(input_size, scale=(0.2, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize(int(input_size * 1.14)),
+            transforms.CenterCrop(input_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+
+def compute_class_weights_from_csv(csv_path, class_names, max_weight=10.0):
+    """Compute class weights from CSV"""
+    import pandas as pd
+    import numpy as np
+    
+    df = pd.read_csv(csv_path)
+    
+    # Get labels
+    if 'label' in df.columns:
+        labels = df['label'].astype(int).values
+    else:
+        label_cols = [col for col in class_names if col in df.columns]
+        onehot = df[label_cols].fillna(0).astype(int).values
+        labels = np.argmax(onehot, axis=1)
+        label_mapping = {i: class_names.index(col) for i, col in enumerate(label_cols)}
+        labels = np.array([label_mapping[int(lbl)] for lbl in labels])
+    
+    # Compute inverse frequency
+    counts = np.bincount(labels, minlength=len(class_names))
+    weights = 1.0 / (counts + 1e-6)
+    weights = weights / weights.sum() * len(class_names)
+    weights = np.minimum(weights, max_weight)
+    
+    return torch.tensor(weights, dtype=torch.float32)
 
 
 class MAEProblem(ImplicitProblem):
     """
     MAE reconstruction problem (Level 1 - Lowest)
-    
-    CRITICAL FIX: MAE forward does NOT receive mask_prob!
-    mask_prob is used ONLY in loss computation
+    - Methods: self.module.X() (single .module)
+    - mask_prob used ONLY in loss, NOT in MAE forward
     """
     def training_step(self, batch):
         images, labels = batch
@@ -43,24 +92,22 @@ class MAEProblem(ImplicitProblem):
         
         # Embed patches (following reference line 306-307)
         x = self.module.patch_embed(images)
-        x = x + self.module.pos_embed[:, 1:, :]  # Add positional embeddings (no CLS token)
+        x = x + self.module.pos_embed[:, 1:, :].detach()  # Add positional embeddings
         
-        # Generate masks using masking module (following reference line 309)
-        # CRITICAL: masking module returns x_masked (not full patches+pos_embed)
-        x_masked, mask, ids_restore, mask_prob = self.masking.module(
-            images,  
-            x,  # Pass patches with pos_embed
+        # Generate masks (following reference line 309)
+        x_masked, mask, ids_restore, mask_prob = self.masking.module.forward(
+            images,  # For UNet importance
+            x,       # For learned refinement
             mask_ratio=self.mask_ratio,
             random=self.random_mask
         )
         
-        # Forward through MAE encoder and decoder (following reference line 311)
-        # CRITICAL FIX: Do NOT pass mask_prob to MAE forward!
-        # MAE forward signature: forward(x, mask, ids_restore)
-        latent = self.module.forward_encoder_mlo(x_masked, mask, ids_restore)
-        pred = self.module.forward_decoder(latent, ids_restore)
+        # Forward through MAE (following reference line 311)
+        # CRITICAL: Do NOT pass mask_prob to MAE forward! Only 3 arguments
+        pred = self.module.forward(x_masked, mask, ids_restore)  # ← Only 3 args
         
         # Compute target (following reference line 312-316)
+        # CRITICAL: Use .module.module for patchify attribute
         target = self.module.patchify(images)
         if self.module.norm_pix_loss:
             mean = target.mean(dim=-1, keepdim=True)
@@ -73,8 +120,9 @@ class MAEProblem(ImplicitProblem):
         loss = loss.mean(dim=-1)  # [B, N], mean loss per patch
         
         # Weight loss by masking probability (following reference line 322-323)
+        # CRITICAL: Gradients flow through mask_prob HERE, not in MAE forward
         if not self.random_mask:
-            loss = loss * mask_prob  # ← Gradients flow through mask_prob HERE
+            loss = loss * mask_prob  # ← THIS is where gradients flow
         
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         
@@ -88,55 +136,18 @@ class ClassifierProblem(ImplicitProblem):
     """
     Classification problem (Level 2 - Middle)
     
-    Trains classifier on:
-    1. Real images (from MAE encoder)
-    2. Reconstructed images (generated by MAE)
+    Trains classifier on real images
     """
     def training_step(self, batch):
         images, labels = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Get encoder output from MAE (following reference line 334)
-        # Use MAE's forward_encoder directly
-        with torch.no_grad():
-            latent, _, _ = self.mae.module.forward_encoder(images)
-        
-        # Use CLS token for classification (following reference line 335)
-        logits = self.module(latent[:, 0])
+        # Classify using hybrid classifier (takes raw images)
+        logits = self.module.forward(images)
         
         # Classification loss
-        loss_real = F.cross_entropy(logits, labels)
-        
-        # Also train on reconstructed images
-        if not self.random_mask and self.use_fake_images:
-            # Generate masks
-            x = self.mae.module.patch_embed(images)
-            x = x + self.mae.module.pos_embed[:, 1:, :]
-            x_masked, mask, ids_restore, _ = self.masking.module(
-                images, x, mask_ratio=self.mask_ratio, random=False
-            )
-            
-            # Reconstruct
-            with torch.no_grad():
-                latent = self.mae.module.forward_encoder_mlo(x_masked, mask, ids_restore)
-                pred = self.mae.module.forward_decoder(latent, ids_restore)
-                
-                # Convert predictions back to images
-                fake_images = self.mae.module.unpatchify(pred)
-                fake_images = torch.clamp(fake_images, 0, 1)
-                
-                # Encode fake images
-                fake_latent, _, _ = self.mae.module.forward_encoder(fake_images)
-            
-            # Classify fake images
-            fake_logits = self.module(fake_latent[:, 0])
-            loss_fake = F.cross_entropy(fake_logits, labels)
-            
-            # Combine losses
-            loss = 0.7 * loss_real + 0.3 * loss_fake
-        else:
-            loss = loss_real
+        loss = F.cross_entropy(logits, labels)
         
         if self.is_rank_zero():
             wandb.log({'classifier/loss': loss.item()})
@@ -155,14 +166,10 @@ class MaskingProblem(ImplicitProblem):
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Get encoder output (following reference line 347-348)
-        with torch.no_grad():
-            latent, _, _ = self.mae.module.forward_encoder(images)
+        # Classify using hybrid classifier
+        logits = self.classifier.module.forward(images)
         
-        # Classify (following reference line 349)
-        logits = self.classifier.module(latent[:, 0])
-        
-        # Validation loss (following reference line 350)
+        # Validation loss
         loss = F.cross_entropy(logits, labels)
         
         if self.is_rank_zero():
@@ -177,7 +184,9 @@ class MLOEngine(Engine):
     @torch.no_grad()
     def validation(self):
         """Validate on validation set"""
-        # Evaluation code here
+        if not hasattr(self, 'val_loader'):
+            return
+        
         correct = 0
         total = 0
         
@@ -185,9 +194,8 @@ class MLOEngine(Engine):
             images = images.to(self.device)
             labels = labels.to(self.device)
             
-            # Forward through MAE encoder then classifier
-            latent, _, _ = self.mae.module.forward_encoder(images)
-            logits = self.classifier.module(latent[:, 0])
+            # Forward through classifier
+            logits = self.classifier.module.forward(images)
             
             preds = torch.argmax(logits, dim=1)
             correct += (preds == labels).sum().item()
@@ -210,17 +218,16 @@ class MLOEngine(Engine):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='MLO-MAE Skin Lesion Classifier')
     
     # Data
-    parser.add_argument('--train_csv', required=True)
-    parser.add_argument('--val_csv', required=True)
-    parser.add_argument('--test_csv', default='')
-    parser.add_argument('--img_dir', required=True)
-    parser.add_argument('--unet_checkpoint', required=True)
+    parser.add_argument('--train_csv', required=True, help='Training CSV path')
+    parser.add_argument('--val_csv', required=True, help='Validation CSV path')
+    parser.add_argument('--test_csv', default='', help='Test CSV path')
+    parser.add_argument('--img_dir', required=True, help='Image directory')
+    parser.add_argument('--unet_checkpoint', required=True, help='Pretrained UNet path')
     
     # Model
-    parser.add_argument('--mae_model', default='mae_vit_base_patch16')
     parser.add_argument('--input_size', type=int, default=224)
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--mask_ratio', type=float, default=0.75)
@@ -238,14 +245,13 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=0.05)
     
     # MLO settings (following reference)
-    parser.add_argument('--unroll_steps_mae', type=int, default=2)  # Reference default: 2
-    parser.add_argument('--unroll_steps_cls', type=int, default=1)  # Reference default: 1
-    parser.add_argument('--unroll_steps_mask', type=int, default=1)  # Reference default: 1
+    parser.add_argument('--unroll_steps_mae', type=int, default=2)
+    parser.add_argument('--unroll_steps_cls', type=int, default=1)
+    parser.add_argument('--unroll_steps_mask', type=int, default=1)
     parser.add_argument('--valid_step', type=int, default=100)
     
     # Options
     parser.add_argument('--baseline', action='store_true', help='Random masking baseline')
-    parser.add_argument('--use_fake_images', action='store_true', default=True)
     parser.add_argument('--output_dir', default='./checkpoints')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', type=int, default=42)
@@ -275,6 +281,7 @@ def main():
     print("="*60)
     
     # Datasets
+    print("\nLoading datasets...")
     train_transform = build_transforms(train=True, input_size=args.input_size)
     val_transform = build_transforms(train=False, input_size=args.input_size)
     
@@ -285,7 +292,12 @@ def main():
     print(f"  Train: {len(train_dataset)} samples")
     print(f"  Val:   {len(val_dataset)} samples")
     
-    # Dataloaders (following reference pattern)
+    if len(train_dataset) == 0:
+        raise ValueError(f"Training dataset is empty! Check CSV path: {args.train_csv}")
+    if len(val_dataset) == 0:
+        raise ValueError(f"Validation dataset is empty! Check CSV path: {args.val_csv}")
+    
+    # Dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -315,18 +327,15 @@ def main():
     # Models
     print("\nBuilding models...")
     
-    # MAE model
+    # MAE model with hybrid encoder
     mae_model = MAEHybrid(
         img_size=args.input_size,
         patch_size=args.patch_size,
         in_chans=3,
         encoder_dim=768,
-        # depth=12,
-        # num_heads=12,
         decoder_dim=512,
         decoder_depth=8,
-        # decoder_num_heads=16,
-        # mlp_ratio=4.,
+        decoder_num_heads=16,
         norm_pix_loss=args.norm_pix_loss
     ).to(device)
     
@@ -339,24 +348,11 @@ def main():
         learnable=not args.baseline
     ).to(device)
     
-    # Classifier
-    classifier = ConvNeXtV2(
-        in_chans=3,
+    # Classifier (Hybrid ConvNeXtV2)
+    classifier = HybridConvNeXtV2(
         num_classes=len(ISIC_CLASSES),
-        depths=[3, 3, 9, 3],
-        dims=[96, 192, 384, 768]
+        pretrained=True
     ).to(device)
-    
-    # Load pretrained ConvNeXt weights
-    try:
-        ckpt = torch.hub.load_state_dict_from_url(
-            "https://dl.fbaipublicfiles.com/convnext/convnextv2/im22k/convnextv2_tiny_22k_224_ema.pt",
-            map_location="cpu"
-        )
-        classifier.load_state_dict(ckpt["model"], strict=False)
-        print("Loaded ConvNeXtV2-Tiny pretrained weights")
-    except:
-        print("Could not load pretrained weights, training from scratch")
     
     print(f"\nModels:")
     print(f"  MAE parameters: {sum(p.numel() for p in mae_model.parameters())/1e6:.2f}M")
@@ -371,7 +367,7 @@ def main():
     ).to(device)
     print(f"\nClass weights: {class_weights.cpu().numpy()}")
     
-    # Optimizers (following reference)
+    # Optimizers
     optimizer_mae = torch.optim.AdamW(
         mae_model.parameters(),
         lr=args.lr_mae,
@@ -393,7 +389,7 @@ def main():
         weight_decay=args.weight_decay
     )
     
-    # Calculate total iterations (following reference)
+    # Calculate total iterations
     num_train_batches = len(train_loader)
     total_iters = args.epochs * num_train_batches * args.unroll_steps_mae * \
                   args.unroll_steps_cls * args.unroll_steps_mask
@@ -404,15 +400,15 @@ def main():
     print(f"  Total iterations: {total_iters}")
     print(f"  Validation every: {args.valid_step} iterations")
     
-    # Schedulers (following reference)
+    # Schedulers
     scheduler_mae = CosineAnnealingLR(optimizer_mae, T_max=total_iters)
     scheduler_cls = CosineAnnealingLR(optimizer_cls, T_max=total_iters)
     scheduler_mask = CosineAnnealingLR(optimizer_mask, T_max=total_iters)
     
-    # Betty configs (following reference)
+    # Betty configs
     mae_config = Config(
         type="darts",
-        retain_graph=True,
+        # retain_graph=True,
         log_step=10,
         unroll_steps=args.unroll_steps_mae,
         allow_unused=True
@@ -420,7 +416,7 @@ def main():
     
     cls_config = Config(
         type="darts",
-        retain_graph=True,
+        # retain_graph=True,
         log_step=10,
         unroll_steps=args.unroll_steps_cls,
         allow_unused=True
@@ -428,7 +424,7 @@ def main():
     
     mask_config = Config(
         type="darts",
-        retain_graph=True,
+        # retain_graph=True,
         log_step=10,
         unroll_steps=args.unroll_steps_mask,
         allow_unused=True
@@ -437,7 +433,6 @@ def main():
     engine_config = EngineConfig(
         valid_step=args.valid_step,
         train_iters=total_iters,
-        logger_type='default',
         roll_back=True
     )
     
@@ -449,10 +444,10 @@ def main():
         scheduler=scheduler_mae,
         train_data_loader=train_loader,
         config=mae_config,
-        # device=device
     )
     mae_problem.mask_ratio = args.mask_ratio
     mae_problem.random_mask = args.baseline
+    mae_problem.device = device
     
     cls_problem = ClassifierProblem(
         name='classifier',
@@ -461,23 +456,20 @@ def main():
         scheduler=scheduler_cls,
         train_data_loader=train_loader,
         config=cls_config,
-        # device=device
     )
-    cls_problem.mask_ratio = args.mask_ratio
-    cls_problem.random_mask = args.baseline
-    cls_problem.use_fake_images = args.use_fake_images
+    cls_problem.device = device
     
     mask_problem = MaskingProblem(
         name='masking',
         module=masking_module,
         optimizer=optimizer_mask,
         scheduler=scheduler_mask,
-        train_data_loader=val_loader,  # Uses validation data (following reference)
+        train_data_loader=val_loader,
         config=mask_config,
-        # device=device
     )
+    mask_problem.device = device
     
-    # Dependencies (following reference line 593-596)
+    # Dependencies
     if args.baseline:
         problems = [mae_problem]
         dependencies = {'l2u': {}, 'u2l': {}}

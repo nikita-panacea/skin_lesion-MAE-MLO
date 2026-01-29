@@ -1,0 +1,155 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            ikqu6763p5147pqql4w5nrg9gd1h7t1v:
+                args:
+                    - --train_csv
+                    - /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/train.csv
+                    - --val_csv
+                    - /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/val.csv
+                    - --test_csv
+                    - /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/test.csv
+                    - --img_dir
+                    - /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/images
+                    - --unet_checkpoint
+                    - /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+                    - --epochs
+                    - "50"
+                    - --batch_size
+                    - "32"
+                    - --mask_ratio
+                    - "0.75"
+                    - --lr_mae
+                    - "1.5e-4"
+                    - --lr_cls
+                    - "5e-4"
+                    - --lr_mask
+                    - "5e-5"
+                    - --unroll_steps_mae
+                    - "2"
+                    - --unroll_steps_cls
+                    - "1"
+                    - --unroll_steps_mask
+                    - "1"
+                    - --valid_step
+                    - "100"
+                    - --output_dir
+                    - ./checkpoints/SKIN-LESION-MLO
+                    - --wandb_mode
+                    - online
+                    - --num_workers
+                    - "8"
+                    - --device
+                    - cuda
+                codePath: train_mlo_skin.py
+                codePathLocal: train_mlo_skin.py
+                cpu_count: 24
+                cpu_count_logical: 32
+                cudaVersion: "12.1"
+                disk:
+                    /:
+                        total: "1967317549056"
+                        used: "1809126940672"
+                email: tiwarinikita98@gmail.com
+                executable: /home/ubuntu/anaconda3/envs/convnextv2/bin/python
+                git:
+                    commit: d12b3639b1e627188dd15776c7a847f3e200e24b
+                    remote: https://github.com/nikita-panacea/skin_lesion-MAE-MLO.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-a5098599-c5f3-77be-d7a6-3094bc893534
+                host: panacea-ml-learn
+                memory:
+                    total: "67121922048"
+                os: Linux-5.19.0-46-generic-x86_64-with-glibc2.17
+                program: train_mlo_skin.py
+                python: CPython 3.8.20
+                root: /home/ubuntu/Documents/Nikita/lesion-classifier-MLO
+                startedAt: "2026-01-29T09:42:03.469973Z"
+                writerId: ikqu6763p5147pqql4w5nrg9gd1h7t1v
+        m: []
+        python_version: 3.8.20
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 49
+                - 51
+                - 53
+                - 63
+            "2":
+                - 1
+                - 5
+                - 41
+                - 49
+                - 51
+                - 53
+                - 63
+            "3":
+                - 13
+                - 16
+            "4": 3.8.20
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
+baseline:
+    value: false
+batch_size:
+    value: 32
+device:
+    value: cuda
+epochs:
+    value: 50
+img_dir:
+    value: /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/images
+input_size:
+    value: 224
+lr_cls:
+    value: 0.0005
+lr_mae:
+    value: 0.00015
+lr_mask:
+    value: 5e-05
+mask_ratio:
+    value: 0.75
+norm_pix_loss:
+    value: true
+num_workers:
+    value: 8
+output_dir:
+    value: ./checkpoints/SKIN-LESION-MLO
+patch_size:
+    value: 16
+seed:
+    value: 42
+test_csv:
+    value: /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/test.csv
+train_csv:
+    value: /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/train.csv
+unet_checkpoint:
+    value: /home/ubuntu/Documents/Nikita/GenSeg/unet/unet.pkl
+unroll_steps_cls:
+    value: 1
+unroll_steps_mae:
+    value: 2
+unroll_steps_mask:
+    value: 1
+val_csv:
+    value: /home/ubuntu/Documents/Nikita/ISIC_2019_dataset/Train_set/val.csv
+valid_step:
+    value: 100
+wandb_mode:
+    value: online
+wandb_name:
+    value: mlo-training
+wandb_project:
+    value: mlo-mae-skin
+weight_decay:
+    value: 0.05
