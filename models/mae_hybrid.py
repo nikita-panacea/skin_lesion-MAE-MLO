@@ -319,6 +319,7 @@ class MAEHybrid(nn.Module):
             1
         )
         x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # No CLS token
+        ids_restore = ids_restore.detach()
         x_ = torch.gather(
             x_, 
             dim=1, 

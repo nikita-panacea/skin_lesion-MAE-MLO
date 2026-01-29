@@ -142,7 +142,14 @@ class UNetMaskingModule(nn.Module):
         mask[:, :len_keep] = 0
         mask = torch.gather(mask, dim=1, index=ids_restore)
         
-        return x_masked, mask, ids_restore, mask_prob
+        # return x_masked, mask, ids_restore, mask_prob
+        return (
+            x_masked,
+            mask.detach(),
+            ids_restore.detach(),
+            mask_prob
+        )
+
 
 
 if __name__ == '__main__':

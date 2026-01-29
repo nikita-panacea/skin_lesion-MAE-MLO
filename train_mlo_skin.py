@@ -124,7 +124,9 @@ class MAEProblem(ImplicitProblem):
         if not self.random_mask:
             loss = loss * mask_prob  # ← THIS is where gradients flow
         
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        # loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        mask_detached = mask.detach()
+        loss = (loss * mask_detached).sum() / mask_detached.sum()
         
         if self.is_rank_zero():
             wandb.log({'mae/loss': loss.item()})
