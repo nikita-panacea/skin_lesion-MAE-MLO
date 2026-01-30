@@ -125,6 +125,7 @@ class MAEProblem(ImplicitProblem):
             mask_ratio=self.config.mask_ratio,
             random=False
         )
+        pred = pred.detach()
         
         return loss
 
@@ -382,7 +383,8 @@ def main():
         type='darts',
         unroll_steps=args.unroll_mae,
         log_step=100,
-        retain_graph=True,
+        # retain_graph=True,
+        retain_graph=False,
         allow_unused=True  # CRITICAL
     )
     
@@ -390,7 +392,8 @@ def main():
         type='darts',
         unroll_steps=args.unroll_classifier,
         log_step=100,
-        retain_graph=True,
+        # retain_graph=True,
+        retain_graph=False,
         allow_unused=True  # CRITICAL
     )
     

@@ -289,6 +289,7 @@ class HybridMAE(nn.Module):
         
         # Mean loss on removed patches only
         loss = (loss * mask).sum() / mask.sum()
+        loss = loss.requires_grad_(True)
         
         return loss, pred, mask
 
