@@ -207,8 +207,19 @@ class HybridMAE(nn.Module):
         # Convert encoder output back to patch sequence
         # encoder.forward returns features before the head
         # For hybrid model, this should be [B, 768, 7, 7] after all stages
-        latent_features = latent_features.flatten(2).transpose(1, 2)  # [B, 49, 768]
         
+        # latent_features = latent_features.flatten(2).transpose(1, 2)  # [B, 49, 768]
+        if latent_features.dim() == 4:
+            # Conv feature map: [B, C, H, W] → tokens
+            latent_features = latent_features.flatten(2).transpose(1, 2)
+        elif latent_features.dim() == 3:
+            # Already tokenized: [B, N, C]
+            pass
+        else:
+            raise RuntimeError(
+                f"Unexpected latent_features shape: {latent_features.shape}"
+            )
+
         # Interpolate/pad to match original patch count if needed
         if latent_features.shape[1] != self.num_patches:
             # Resize to original patch grid
