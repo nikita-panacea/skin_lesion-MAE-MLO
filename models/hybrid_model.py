@@ -136,6 +136,36 @@ class HybridConvNeXtV2(nn.Module):
         x = self.head(x)
         
         return x
+    
+    def forward_features(self, x):
+        """
+        Returns spatial/token features BEFORE global pooling.
+        Output shape: [B, 49, 768]
+        """
+        # Stage 1
+        x = self.stem(x)
+        x = self.stage1(x)
+
+        # Stage 2
+        x = self.down1(x)
+        x = self.stage2(x)
+
+        # Stage 3 (14x14 tokens)
+        x = self.down2(x)
+        B, C, H, W = x.shape
+        x = x.flatten(2).transpose(1, 2)
+        x = self.stage3(x)
+        x = x.transpose(1, 2).view(B, C, H, W)
+
+        # Stage 4 (7x7 tokens)
+        x = self.down3(x)
+        B, C, H, W = x.shape
+        x = x.flatten(2).transpose(1, 2)
+        x = self.stage4(x)
+
+        # RETURN TOKENS, NOT POOLED
+        return x  # [B, 49, 768]
+
 
     def count_parameters(self):
         """Count parameters"""

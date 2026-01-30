@@ -202,7 +202,8 @@ class HybridMAE(nn.Module):
         
         # Pass full image through hybrid encoder
         B, _, H_img, W_img = images.shape
-        latent_features = self.encoder(images)  # [B, D_out, H_feat, W_feat]
+        # latent_features = self.encoder(images)  # [B, D_out, H_feat, W_feat]
+        latent_features = self.encoder.forward_features(images)
         
         # Convert encoder output back to patch sequence
         # encoder.forward returns features before the head
