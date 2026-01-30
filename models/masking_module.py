@@ -53,9 +53,9 @@ class UNetMaskingModule(nn.Module):
             if Path(pretrained_unet_path).exists():
                 state_dict = torch.load(pretrained_unet_path, map_location='cpu')
                 self.unet.load_state_dict(state_dict)
-                print(f"Loaded pretrained UNet from {pretrained_unet_path}")
+                print(f" Loaded pretrained UNet from {pretrained_unet_path}")
             else:
-                print(f"Warning: UNet checkpoint not found at {pretrained_unet_path}")
+                print(f"  Warning: UNet checkpoint not found at {pretrained_unet_path}")
             
             # CRITICAL: Freeze and set to eval
             for param in self.unet.parameters():
