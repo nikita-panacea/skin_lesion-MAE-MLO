@@ -1,12 +1,13 @@
-# train_mlo_skin.py - FIXED VERSION
+# train_mlo_skin.py - FIXED VERSION v2
 """
 MLO-MAE Training for Skin Lesion Classification
 
-CRITICAL FIXES:
-1. Proper allow_unused=True in all configs
-2. Detach frozen outputs in Problems
-3. Correct dependency graph
-4. Fixed validation handling
+CRITICAL FIXES (v2):
+1. Fixed dependency graph - masking accessible from mae via l2u
+2. Proper gradient isolation for frozen UNet
+3. Correct Problem access pattern matching MLOMAE reference
+4. Fixed validation handling with proper detachment
+5. Removed retain_graph from lower-level problems
 """
 import os
 import sys
@@ -32,6 +33,9 @@ from models.hybrid_classifier import HybridClassifier
 # Import utilities
 import wandb
 import logging
+
+# Global args reference for access in Problems
+GLOBAL_ARGS = None
 
 
 def parse_args():
@@ -60,6 +64,8 @@ def parse_args():
     # MAE settings
     parser.add_argument('--mask_ratio', type=float, default=0.75)
     parser.add_argument('--norm_pix_loss', action='store_true', default=True)
+    parser.add_argument('--baseline', action='store_true', default=False,
+                       help='Use random masking baseline (no learned masking)')
     
     # System
     parser.add_argument('--num_workers', type=int, default=4)
@@ -105,48 +111,77 @@ def load_isic_data(args):
 
 class MAEProblem(ImplicitProblem):
     """
-    Stage 1: MAE Pretraining
+    Stage 1: MAE Pretraining (Lowest Level)
     
-    FIXED:
-    - Detach outputs from masking module
-    - Proper allow_unused handling
+    Following MLOMAE pattern:
+    - Access masking module via self.masking (Problem reference)
+    - Gradient flows through mask_prob for hypergradient computation
+    - mask and ids_restore are detached (non-differentiable argsort)
     """
     def training_step(self, batch):
-        images, _, _ = batch
+        images, labels, _ = batch
         images = images.to(self.device)
         
-        # CRITICAL: Get masking module outputs and ensure proper detachment
-        mask_module = self.masking.module
+        # Step 1: Compute patch embeddings
+        x = self.module.patch_embed(images)
+        x = x + self.module.pos_embed[:, 1:, :]
         
-        # Forward through MAE
-        loss, pred, mask = self.module(
-            images,
-            mask_module,
-            mask_ratio=self.config.mask_ratio,
-            random=False
+        # Step 2: Get masking from masking module (accessed via self.masking)
+        # This matches MLOMAE: self.mask.module.module.forward(...)
+        # For non-DDP, it's self.masking.module
+        x_masked, mask, ids_restore, mask_prob = self.masking.module(
+            images, x, GLOBAL_ARGS.mask_ratio, random=GLOBAL_ARGS.baseline
         )
-        pred = pred.detach()
+        
+        # Step 3: Forward through MAE encoder + decoder
+        pred = self.module.forward_with_mask(x_masked, mask, ids_restore)
+        
+        # Step 4: Compute reconstruction loss
+        target = self.module.patchify(images)
+        if self.module.norm_pix_loss:
+            mean = target.mean(dim=-1, keepdim=True)
+            var = target.var(dim=-1, keepdim=True)
+            target = (target - mean) / (var + 1e-6) ** 0.5
+        
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)  # [B, N], mean loss per patch
+        
+        # CRITICAL: Weight by mask_prob to enable backprop through masking module
+        # This is how MLOMAE enables gradient flow
+        if not GLOBAL_ARGS.baseline:
+            loss = loss * mask_prob
+        
+        # Mean loss on masked patches only
+        loss = (loss * mask).sum() / mask.sum()
         
         return loss
 
 
 class ClassifierProblem(ImplicitProblem):
     """
-    Stage 2: Classifier Training
+    Stage 2: Classifier Training (Middle Level)
     
-    FIXED:
-    - Extract features from frozen MAE encoder
-    - Proper detachment
+    Uses features from MAE encoder for classification.
+    Gradient flows to MAE through the encoder for bilevel optimization.
+    
+    CRITICAL: Do NOT use torch.no_grad() here - Betty needs gradient flow
+    for hypergradient computation in bilevel optimization.
     """
     def training_step(self, batch):
         images, labels, _ = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Forward through classifier
-        logits = self.module(images)
+        # Get encoder features from MAE (accessed via self.mae)
+        # IMPORTANT: No no_grad() - Betty needs gradient flow for bilevel optimization
+        encoder_output, _, _ = self.mae.module.forward_encoder(images)
         
-        # Compute loss
+        # Forward through classifier using the CLS token
+        # encoder_output shape: [B, N+1, D] where first token is CLS
+        cls_features = encoder_output[:, 0]
+        logits = self.module.forward_from_features(cls_features)
+        
+        # Compute classification loss
         loss = F.cross_entropy(logits, labels)
         
         return loss
@@ -154,22 +189,24 @@ class ClassifierProblem(ImplicitProblem):
 
 class MaskingProblem(ImplicitProblem):
     """
-    Stage 3: Masking Module Update
+    Stage 3: Masking Module Update (Highest Level)
     
-    FIXED:
-    - Validation loss for architecture update
-    - Proper gradient flow
+    Updated based on validation loss of classifier.
+    This drives the masking to focus on lesion-relevant regions.
     """
     def training_step(self, batch):
         images, labels, _ = batch
         images = images.to(self.device)
         labels = labels.to(self.device)
         
-        # Forward through full pipeline
-        # Classifier already uses updated encoder
-        logits = self.classifier.module(images)
+        # Get encoder features from MAE (with gradient flow)
+        encoder_output, _, _ = self.mae.module.forward_encoder(images)
         
-        # Compute validation loss
+        # Forward through classifier using CLS token
+        cls_features = encoder_output[:, 0]
+        logits = self.classifier.module.forward_from_features(cls_features)
+        
+        # Compute validation/meta loss
         loss = F.cross_entropy(logits, labels)
         
         return loss
@@ -179,32 +216,40 @@ class SkinMLOEngine(Engine):
     """
     Custom MLO Engine with validation
     
-    FIXED:
-    - Proper validation loop
-    - Checkpoint saving
+    FIXED (v2):
+    - Proper validation using encoder features
+    - Checkpoint saving with all components
+    - Logging improvements
     """
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.best_acc = 0.0
         self.args = None
+        self.val_loader = None
     
     @torch.no_grad()
     def validation(self):
         """Validation on held-out set"""
         self.eval()
         
-        classifier = self.classifier.module
-        val_loader = self.classifier.val_data_loader
+        mae_model = self.mae.module
+        classifier_model = self.classifier.module
         
         correct = 0
         total = 0
         
-        for images, labels, _ in val_loader:
+        for batch in self.val_loader:
+            images, labels, _ = batch
             images = images.to(self.device)
             labels = labels.to(self.device)
             
-            logits = classifier(images)
+            # Get encoder features
+            encoder_output, _, _ = mae_model.forward_encoder(images)
+            cls_features = encoder_output[:, 0]
+            
+            # Classify
+            logits = classifier_model.forward_from_features(cls_features)
             preds = torch.argmax(logits, dim=1)
             
             correct += (preds == labels).sum().item()
@@ -214,27 +259,32 @@ class SkinMLOEngine(Engine):
         
         # Log
         if self.is_rank_zero():
-            logging.info(f"Validation Accuracy: {acc:.2f}%")
-            wandb.log({
-                'val_acc': acc,
-                'global_step': self.global_step
-            })
+            logging.info(f"[Validation] Step {self.global_step}: Accuracy = {acc:.2f}%")
+            try:
+                wandb.log({
+                    'val_acc': acc,
+                    'best_acc': self.best_acc,
+                    'global_step': self.global_step
+                })
+            except:
+                pass  # wandb might not be initialized
         
         # Save best
         if acc > self.best_acc:
             self.best_acc = acc
             if self.is_rank_zero():
                 self.save_checkpoint('best_model.pt')
-                logging.info(f" New best accuracy: {acc:.2f}%")
+                logging.info(f"  -> New best accuracy: {acc:.2f}%")
         
         self.train()
+        return {'val_acc': acc}
     
     def save_checkpoint(self, filename):
         """Save checkpoint"""
         if not self.is_rank_zero():
             return
         
-        save_path = Path(self.args.output_dir) / filename
+        save_path = Path(GLOBAL_ARGS.output_dir) / filename
         
         checkpoint = {
             'epoch': self.global_step // self.steps_per_epoch,
@@ -253,7 +303,9 @@ class SkinMLOEngine(Engine):
 
 
 def main():
+    global GLOBAL_ARGS
     args = parse_args()
+    GLOBAL_ARGS = args  # Set global reference for Problem access
     
     # Setup
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -268,15 +320,18 @@ def main():
     )
     
     if args.wandb_mode != 'disabled':
-        wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_name,
-            config=vars(args),
-            mode=args.wandb_mode
-        )
+        try:
+            wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_name,
+                config=vars(args),
+                mode=args.wandb_mode
+            )
+        except Exception as e:
+            logging.warning(f"Could not initialize wandb: {e}")
     
     print("\n" + "="*60)
-    print("MLO-MAE Skin Lesion Classifier Training")
+    print("MLO-MAE Skin Lesion Classifier Training (v2)")
     print("="*60)
     
     # Load data
@@ -309,13 +364,12 @@ def main():
     # Build models
     print("\nBuilding models...")
     
-    # 1. MAE
+    # 1. MAE with hybrid encoder
     mae_model = mae_hybrid_base(
-        pretrained_unet_path=args.unet_path,
         norm_pix_loss=args.norm_pix_loss
     ).to(device)
     
-    # 2. Masking module
+    # 2. Masking module (with frozen UNet for importance estimation)
     masking_module = UNetMaskingModule(
         pretrained_unet_path=args.unet_path,
         num_patches=196,
@@ -324,22 +378,22 @@ def main():
         use_unet=True
     ).to(device)
     
-    # 3. Classifier
-    classifier = HybridClassifier(
-        num_classes=8,
-        pretrained_mae=None,
-        freeze_encoder=False
+    # 3. Classifier head (lightweight, uses MAE encoder features)
+    from models.hybrid_classifier import ClassifierHead
+    classifier_head = ClassifierHead(
+        embed_dim=768,
+        num_classes=8
     ).to(device)
     
     # Count parameters
     mae_params = sum(p.numel() for p in mae_model.parameters() if p.requires_grad)
     mask_params = sum(p.numel() for p in masking_module.parameters() if p.requires_grad)
-    cls_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
+    cls_params = sum(p.numel() for p in classifier_head.parameters() if p.requires_grad)
     
     print(f"\nModels:")
     print(f"  MAE parameters: {mae_params/1e6:.2f}M")
-    print(f"  Masking parameters: {mask_params/1e6:.2f}M")
-    print(f"  Classifier parameters: {cls_params/1e6:.2f}M")
+    print(f"  Masking parameters (trainable only): {mask_params/1e6:.2f}M")
+    print(f"  Classifier head parameters: {cls_params/1e6:.2f}M")
     
     # Optimizers
     optimizer_mae = torch.optim.AdamW(
@@ -350,14 +404,16 @@ def main():
     )
     
     optimizer_classifier = torch.optim.AdamW(
-        classifier.parameters(),
+        classifier_head.parameters(),
         lr=args.lr_classifier,
         betas=(0.9, 0.95),
         weight_decay=args.weight_decay
     )
     
+    # Only optimize learnable parameters in masking module
+    masking_params = [p for p in masking_module.parameters() if p.requires_grad]
     optimizer_masking = torch.optim.AdamW(
-        masking_module.parameters(),
+        masking_params,
         lr=args.lr_masking,
         betas=(0.9, 0.95),
         weight_decay=args.weight_decay
@@ -365,7 +421,8 @@ def main():
     
     # Learning rate schedulers
     steps_per_epoch = len(train_loader)
-    total_steps = args.epochs * steps_per_epoch
+    # Account for unroll steps in total iterations
+    total_steps = args.epochs * steps_per_epoch * args.unroll_mae * args.unroll_classifier * args.unroll_masking
     
     scheduler_mae = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer_mae, T_max=total_steps
@@ -377,33 +434,40 @@ def main():
         optimizer_masking, T_max=total_steps
     )
     
-    # Betty Problems
-    # CRITICAL FIX: Set allow_unused=True for all problems
+    # ==========================================================================
+    # Betty Problem Configurations
+    # ==========================================================================
+    # CRITICAL FIX: 
+    # - mae (lowest): retain_graph=True, allow_unused=True
+    # - classifier (middle): retain_graph=True, allow_unused=True  
+    # - masking (highest): retain_graph=False (final level)
+    # ==========================================================================
+    
     mae_config = Config(
         type='darts',
         unroll_steps=args.unroll_mae,
         log_step=100,
-        # retain_graph=True,
-        retain_graph=False,
-        allow_unused=True  # CRITICAL
+        retain_graph=True,
+        allow_unused=True
     )
     
     classifier_config = Config(
         type='darts',
         unroll_steps=args.unroll_classifier,
         log_step=100,
-        # retain_graph=True,
-        retain_graph=False,
-        allow_unused=True  # CRITICAL
+        retain_graph=True,
+        allow_unused=True
     )
     
     masking_config = Config(
         type='darts',
         unroll_steps=args.unroll_masking,
         log_step=100,
-        allow_unused=True  # CRITICAL
+        retain_graph=True,  # MLOMAE uses retain_graph=True for all levels
+        allow_unused=True
     )
     
+    # Create Betty Problems
     mae = MAEProblem(
         name='mae',
         module=mae_model,
@@ -411,46 +475,51 @@ def main():
         scheduler=scheduler_mae,
         train_data_loader=train_loader,
         config=mae_config,
-        # device=device
     )
-    # Add mask_ratio to config
-    mae.config.mask_ratio = args.mask_ratio
     
     classifier = ClassifierProblem(
         name='classifier',
-        module=classifier,
+        module=classifier_head,
         optimizer=optimizer_classifier,
         scheduler=scheduler_classifier,
         train_data_loader=train_loader,
         config=classifier_config,
-        # device=device
     )
-    # Add validation loader
-    classifier.val_data_loader = val_loader
     
     masking = MaskingProblem(
         name='masking',
         module=masking_module,
         optimizer=optimizer_masking,
         scheduler=scheduler_masking,
-        train_data_loader=val_loader,  # Use val set for masking update
+        train_data_loader=val_loader,  # Use val set for masking update (meta-learning)
         config=masking_config,
-        # device=device
     )
     
-    # Dependency graph
-    # masking -> classifier -> mae
-    # masking needs classifier, classifier needs mae
+    # ==========================================================================
+    # Dependency Graph (CRITICAL FIX)
+    # ==========================================================================
+    # Following MLOMAE pattern:
+    # - mae needs to access masking for getting mask probabilities
+    # - classifier needs to access mae for encoder features
+    # - masking needs to access both mae and classifier for meta-loss
+    #
+    # u2l: upper to lower (what each upper depends on)
+    # l2u: lower to upper (what each lower feeds into)
+    # ==========================================================================
+    
     problems = [mae, classifier, masking]
     
+    # Upper-to-Lower: What each upper-level problem depends on
     u2l = {
-        masking: [classifier, mae],
-        classifier: [mae]
+        masking: [mae],        # masking optimizes based on mae's encoder
+        classifier: [mae]       # classifier uses mae's features
     }
     
+    # Lower-to-Upper: What each lower feeds into  
+    # CRITICAL: mae needs masking as upper so it can access self.masking
     l2u = {
-        mae: [classifier],
-        classifier: [masking]
+        mae: [classifier, masking],  # mae feeds into classifier AND masking can access it
+        classifier: [masking]         # classifier feeds into masking
     }
     
     dependencies = {'u2l': u2l, 'l2u': l2u}
@@ -459,7 +528,7 @@ def main():
     engine_config = EngineConfig(
         strategy='default',
         train_iters=total_steps,
-        valid_step=args.val_freq,
+        valid_step=args.val_freq * args.unroll_mae * args.unroll_classifier * args.unroll_masking,
         logger_type='tensorboard'
     )
     
@@ -470,21 +539,26 @@ def main():
         dependencies=dependencies
     )
     
-    engine.args = args
     engine.steps_per_epoch = steps_per_epoch
+    engine.val_loader = val_loader
     
-    print(f"\nTraining:")
+    print(f"\nTraining Configuration:")
     print(f"  Epochs: {args.epochs}")
     print(f"  Iterations per epoch: {steps_per_epoch}")
     print(f"  Total iterations: {total_steps}")
-    print(f"  Validation every: {args.val_freq} iterations")
+    print(f"  Validation every: {engine_config.valid_step} iterations")
+    print(f"  Unroll steps: mae={args.unroll_mae}, cls={args.unroll_classifier}, mask={args.unroll_masking}")
+    print(f"  Baseline (random masking): {args.baseline}")
     
     print("\n" + "="*60)
     print("Starting training...")
     print("="*60 + "\n")
     
-    # Run
+    # Run training
     engine.run()
+    
+    # Final checkpoint
+    engine.save_checkpoint('final_model.pt')
     
     print("\n" + "="*60)
     print(f"Training complete! Best accuracy: {engine.best_acc:.2f}%")

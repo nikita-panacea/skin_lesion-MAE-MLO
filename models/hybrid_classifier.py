@@ -1,22 +1,107 @@
-# models/hybrid_classifier.py
+# models/hybrid_classifier.py - FIXED VERSION v2
 
 """
-Hybrid Classifier for fine-tuning stage
-Wraps the hybrid encoder for classification
+Classifier components for MLO-MAE training
 
-FIXES:
-1. Simplified initialization
-2. Proper forward pass
-3. Compatible with MLO framework
+This file contains two classifier types:
+1. ClassifierHead: Lightweight classifier that takes encoded features (for MLO training)
+2. HybridClassifier: Full encoder+classifier (for standalone training/inference)
+
+The ClassifierHead matches MLOMAE's FinetuneVisionTransformer pattern.
 """
 import torch
 import torch.nn as nn
+from functools import partial
+
+
+class ClassifierHead(nn.Module):
+    """
+    Lightweight classifier head for MLO training
+    
+    Takes encoded features from MAE and produces class predictions.
+    Matches MLOMAE's FinetuneVisionTransformer structure.
+    
+    This is used as the module for ClassifierProblem in Betty MLO.
+    """
+    def __init__(self, embed_dim=768, num_classes=8, drop_rate=0.1, global_pool=False):
+        super().__init__()
+        
+        self.embed_dim = embed_dim
+        self.num_classes = num_classes
+        self.global_pool = global_pool
+        
+        # Layer norm before classification
+        self.fc_norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        
+        # Dropout
+        self.head_drop = nn.Dropout(drop_rate)
+        
+        # Classification head
+        self.head = nn.Linear(embed_dim, num_classes)
+        
+        # Initialize
+        self._init_weights()
+    
+    def _init_weights(self):
+        nn.init.trunc_normal_(self.head.weight, std=0.02)
+        if self.head.bias is not None:
+            nn.init.zeros_(self.head.bias)
+    
+    def forward(self, x, mae_model=None, pre_logits=False):
+        """
+        Forward pass
+        
+        Matches MLOMAE FinetuneVisionTransformer.forward()
+        
+        Args:
+            x: Features from MAE encoder
+               - If x is [B, N+1, D] (full sequence with CLS): uses CLS token
+               - If x is [B, D] (already pooled): uses directly
+            mae_model: Unused (kept for API compatibility)
+            pre_logits: If True, return features before classification head
+        
+        Returns:
+            logits: [B, num_classes] or features: [B, embed_dim]
+        """
+        # Handle different input shapes
+        if x.dim() == 3:
+            if self.global_pool:
+                # Average pool over all tokens except CLS
+                x = x[:, 1:, :].mean(dim=1)
+            else:
+                # Use CLS token (first token)
+                x = x[:, 0]
+        
+        # x is now [B, D]
+        x = self.fc_norm(x)
+        x = self.head_drop(x)
+        
+        if pre_logits:
+            return x
+        
+        return self.head(x)
+    
+    def forward_from_features(self, features):
+        """
+        Classify from pre-extracted features
+        
+        Args:
+            features: [B, embed_dim] - CLS token or pooled features
+        
+        Returns:
+            logits: [B, num_classes]
+        """
+        x = self.fc_norm(features)
+        x = self.head_drop(x)
+        return self.head(x)
 
 
 class HybridClassifier(nn.Module):
     """
-    Classifier using hybrid ConvNeXtV2 + Attention encoder
-    Can be initialized from pretrained MAE encoder
+    Full classifier using hybrid ConvNeXtV2 + Attention encoder
+    
+    This is for standalone training/inference, NOT for MLO training.
+    For MLO training, use ClassifierHead with MAE encoder features.
     """
     def __init__(self, num_classes=8, pretrained_mae=None, freeze_encoder=False):
         super().__init__()
@@ -29,7 +114,7 @@ class HybridClassifier(nn.Module):
         # Use the hybrid model directly
         self.encoder = HybridConvNeXtV2(
             num_classes=num_classes,
-            pretrained=True  # Use ImageNet pretraining
+            pretrained=True
         )
         
         # If pretrained MAE provided, initialize encoder weights
@@ -39,97 +124,48 @@ class HybridClassifier(nn.Module):
         # Optionally freeze encoder
         if freeze_encoder:
             for name, param in self.encoder.named_parameters():
-                if 'head' not in name:  # Keep head trainable
+                if 'head' not in name:
                     param.requires_grad = False
     
     def _init_from_mae(self, mae_model):
         """Initialize encoder from pretrained MAE"""
-        # The MAE encoder uses transformer blocks
-        # We can copy compatible weights to the attention stages
-        
-        mae_state = mae_model.encoder
-        
-        # Copy transformer block weights to stage3 and stage4
-        # MAE has 12 blocks, we have 9+12=21 in hybrid model
-        # We'll initialize the attention stages with MAE weights
-        
-        print("Initializing attention stages from MAE encoder...")
+        print("Initializing from pretrained MAE...")
         
         try:
-            # Get MAE encoder blocks
-            mae_blocks = mae_state['blocks']
+            # Copy compatible weights from MAE blocks
+            mae_blocks = list(mae_model.blocks)
             
-            # Initialize stage3 (9 blocks) with first 9 MAE blocks
-            for i in range(min(9, len(mae_blocks))):
-                src_block = mae_blocks[i]
-                dst_block = self.encoder.stage3[i]
-                
-                # Copy compatible parameters
-                for name, param in dst_block.named_parameters():
-                    if hasattr(src_block, name.split('.')[0]):
-                        src_param = src_block
-                        for attr in name.split('.'):
-                            src_param = getattr(src_param, attr, None)
-                            if src_param is None:
-                                break
-                        
-                        if src_param is not None and param.shape == src_param.shape:
-                            param.data.copy_(src_param.data)
-            
-            # Initialize stage4 (12 blocks) with remaining MAE blocks
-            for i in range(min(12, len(mae_blocks))):
-                mae_idx = min(i, len(mae_blocks) - 1)
-                src_block = mae_blocks[mae_idx]
-                dst_block = self.encoder.stage4[i]
-                
-                # Copy compatible parameters
-                for name, param in dst_block.named_parameters():
-                    if hasattr(src_block, name.split('.')[0]):
-                        src_param = src_block
-                        for attr in name.split('.'):
-                            src_param = getattr(src_param, attr, None)
-                            if src_param is None:
-                                break
-                        
-                        if src_param is not None and param.shape == src_param.shape:
-                            param.data.copy_(src_param.data)
+            # Initialize attention stages with MAE block weights where compatible
+            for i, (mae_block, enc_block) in enumerate(zip(mae_blocks, 
+                                                            list(self.encoder.stage3) + list(self.encoder.stage4))):
+                # Try to copy attention weights
+                for name, param in enc_block.named_parameters():
+                    try:
+                        mae_param = dict(mae_block.named_parameters()).get(name)
+                        if mae_param is not None and param.shape == mae_param.shape:
+                            param.data.copy_(mae_param.data)
+                    except:
+                        pass
             
             print("Encoder initialized from pretrained MAE")
         except Exception as e:
             print(f"Warning: Could not fully initialize from MAE: {e}")
-            print("Using default initialization")
     
     def forward(self, x):
-        """
-        Args:
-            x: [B, 3, H, W] - input images
-        Returns:
-            logits: [B, num_classes]
-        """
+        """Full forward pass with encoder"""
         return self.encoder(x)
     
-    def extract_features(self, x):
-        """Extract features without classification"""
-        # Forward through all stages except head
-        x = self.encoder.stem(x)
-        x = self.encoder.stage1(x)
-        x = self.encoder.down1(x)
-        x = self.encoder.stage2(x)
-        x = self.encoder.down2(x)
+    def forward_from_features(self, features):
+        """
+        Classify from pre-extracted features
         
-        # Convert to sequence for attention stages
-        B, C, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)
-        x = self.encoder.stage3(x)
-        x = x.transpose(1, 2).view(B, C, H, W)
-        
-        x = self.encoder.down3(x)
-        B, C, H, W = x.shape
-        x = x.flatten(2).transpose(1, 2)
-        x = self.encoder.stage4(x)
-        
-        # Global pooling
-        x = x.mean(dim=1)
-        x = self.encoder.norm(x)
-        
+        This provides API compatibility with ClassifierHead
+        """
+        # For HybridClassifier, we expect the encoder's norm and head
+        x = self.encoder.norm(features)
+        x = self.encoder.head(x)
         return x
+    
+    def extract_features(self, x):
+        """Extract features without classification head"""
+        return self.encoder.forward_features(x)

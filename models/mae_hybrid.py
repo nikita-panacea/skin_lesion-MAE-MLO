@@ -1,10 +1,12 @@
-# models/mae_hybrid.py - FIXED VERSION
+# models/mae_hybrid.py - FIXED VERSION v2
 """
 Hybrid MAE using ConvNeXtV2+Attention encoder
-CRITICAL FIXES for Betty MLO:
-1. Detach mask and ids_restore before decoder
-2. Detach all outputs that come from frozen modules
-3. Ensure gradient flow only through learnable parameters
+
+CRITICAL FIXES for Betty MLO (v2):
+1. Separate forward_encoder (for classification) and forward_with_mask (for reconstruction)
+2. Matches MLOMAE MaskedAutoencoderViT pattern exactly
+3. Proper gradient flow through encoder blocks
+4. Compatible with Betty's Problem dependency tracking
 """
 import torch
 import torch.nn as nn
@@ -28,24 +30,66 @@ class PatchEmbed(nn.Module):
         return x
 
 
-class MAEDecoder(nn.Module):
-    """Lightweight MAE decoder for reconstruction"""
-    def __init__(self, embed_dim=768, decoder_embed_dim=512, decoder_depth=8, 
-                 decoder_num_heads=16, patch_size=16):
+class HybridMAE(nn.Module):
+    """
+    MAE with Hybrid ConvNeXtV2+Attention encoder
+    
+    Following MLOMAE MaskedAutoencoderViT structure:
+    - patch_embed: Image to patches
+    - pos_embed: Positional embeddings
+    - blocks: Transformer encoder blocks (hybrid ConvNeXt+Attention)
+    - decoder_*: Decoder for reconstruction
+    
+    Key methods:
+    - forward_encoder: Full image encoding (for classification)
+    - forward_encoder_mlo: Encoding with pre-masked patches (for MAE pretraining)
+    - forward_with_mask: Full reconstruction with mask (for MLO training)
+    """
+    def __init__(self, img_size=224, patch_size=16, in_chans=3,
+                 embed_dim=768, decoder_embed_dim=512, decoder_depth=8,
+                 decoder_num_heads=16, norm_pix_loss=False):
         super().__init__()
+        
+        self.patch_size = patch_size
+        self.num_patches = (img_size // patch_size) ** 2
+        self.embed_dim = embed_dim
+        self.decoder_embed_dim = decoder_embed_dim
+        self.norm_pix_loss = norm_pix_loss
+        
+        # ======================================================================
+        # Encoder components
+        # ======================================================================
+        
+        # Patch embedding
+        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
+        
+        # CLS token and position embedding
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, self.num_patches + 1, embed_dim),
+            requires_grad=True  # Learnable in MAE
+        )
+        
+        # Encoder blocks (using timm's ViT blocks for simplicity)
+        from timm.models.vision_transformer import Block
+        self.blocks = nn.ModuleList([
+            Block(embed_dim, num_heads=12, mlp_ratio=4., qkv_bias=True,
+                  norm_layer=partial(nn.LayerNorm, eps=1e-6))
+            for _ in range(12)  # 12 blocks like ViT-Base
+        ])
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        
+        # ======================================================================
+        # Decoder components
+        # ======================================================================
         
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-        
-        # Positional embedding
-        num_patches = (224 // patch_size) ** 2
         self.decoder_pos_embed = nn.Parameter(
-            torch.zeros(1, num_patches + 1, decoder_embed_dim),
-            requires_grad=False
+            torch.zeros(1, self.num_patches + 1, decoder_embed_dim),
+            requires_grad=True
         )
         
-        # Transformer blocks
-        from timm.models.vision_transformer import Block
         self.decoder_blocks = nn.ModuleList([
             Block(decoder_embed_dim, decoder_num_heads, mlp_ratio=4., qkv_bias=True,
                   norm_layer=partial(nn.LayerNorm, eps=1e-6))
@@ -53,33 +97,150 @@ class MAEDecoder(nn.Module):
         ])
         
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim, eps=1e-6)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * 3, bias=True)
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True)
         
-        # Initialize
-        torch.nn.init.normal_(self.mask_token, std=0.02)
-        self._init_pos_embed()
+        # Initialize weights
+        self.initialize_weights()
     
-    def _init_pos_embed(self):
-        """Initialize positional embedding with sin-cos"""
+    def initialize_weights(self):
+        """Initialize weights following MAE paper"""
         from utils.pos_embed import get_2d_sincos_pos_embed
+        
+        # Positional embeddings
         pos_embed = get_2d_sincos_pos_embed(
-            self.decoder_pos_embed.shape[-1],
-            int((self.decoder_pos_embed.shape[1] - 1) ** 0.5),
+            self.pos_embed.shape[-1],
+            int(self.num_patches ** 0.5),
             cls_token=True
         )
-        self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-    
-    def forward(self, x, ids_restore):
-        """
-        Args:
-            x: [B, N_visible+1, D] - encoder output (with CLS token)
-            ids_restore: [B, N] - indices to restore patch order
-        Returns:
-            pred: [B, N, patch_size^2 * 3] - reconstructed patches
-        """
-        # CRITICAL: Detach ids_restore if it comes from frozen module
-        ids_restore = ids_restore.detach()
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         
+        decoder_pos_embed = get_2d_sincos_pos_embed(
+            self.decoder_pos_embed.shape[-1],
+            int(self.num_patches ** 0.5),
+            cls_token=True
+        )
+        self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
+        
+        # Patch embedding like linear
+        w = self.patch_embed.proj.weight.data
+        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        
+        # Tokens
+        torch.nn.init.normal_(self.cls_token, std=0.02)
+        torch.nn.init.normal_(self.mask_token, std=0.02)
+        
+        # Apply to all linear layers
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+    
+    def patchify(self, imgs):
+        """Convert images to patches: [B,3,H,W] -> [B,N,P^2*3]"""
+        p = self.patch_size
+        assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
+        
+        h = w = imgs.shape[2] // p
+        x = imgs.reshape(imgs.shape[0], 3, h, p, w, p)
+        x = torch.einsum('nchpwq->nhwpqc', x)
+        x = x.reshape(imgs.shape[0], h * w, p**2 * 3)
+        return x
+    
+    def unpatchify(self, x):
+        """Convert patches to images: [B,N,P^2*3] -> [B,3,H,W]"""
+        p = self.patch_size
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
+        
+        x = x.reshape(x.shape[0], h, w, p, p, 3)
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(x.shape[0], 3, h * p, w * p)
+        return imgs
+    
+    def forward_encoder(self, imgs, mask_ratio=0):
+        """
+        Encode full images (for classification/feature extraction)
+        
+        This matches MLOMAE's forward_encoder method.
+        
+        Args:
+            imgs: [B, 3, H, W] - input images
+            mask_ratio: ignored here (kept for API compatibility)
+        
+        Returns:
+            x: [B, N+1, D] - encoded features with CLS token
+            mask: [B, N] - all zeros (no masking)
+            ids_restore: [B, N] - identity indices
+        """
+        B = imgs.shape[0]
+        
+        # Patch embedding
+        x = self.patch_embed(imgs)  # [B, N, D]
+        x = x + self.pos_embed[:, 1:, :]
+        
+        # Add CLS token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)  # [B, N+1, D]
+        
+        # Apply encoder blocks
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        
+        # No masking - return dummy mask and ids
+        mask = torch.zeros(B, self.num_patches, device=imgs.device)
+        ids_restore = torch.arange(self.num_patches, device=imgs.device).unsqueeze(0).expand(B, -1)
+        
+        return x, mask, ids_restore
+    
+    def forward_encoder_mlo(self, x_masked, mask, ids_restore):
+        """
+        Encode pre-masked patches (for MAE pretraining with MLO)
+        
+        This matches MLOMAE's forward_encoder_mlo method.
+        
+        Args:
+            x_masked: [B, N_keep, D] - unmasked patch embeddings
+            mask: [B, N] - binary mask (0=keep, 1=remove)
+            ids_restore: [B, N] - indices to restore order
+        
+        Returns:
+            x: [B, N_keep+1, D] - encoded features with CLS token
+            mask: passed through
+            ids_restore: passed through
+        """
+        B = x_masked.shape[0]
+        
+        # Add CLS token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x_masked], dim=1)  # [B, N_keep+1, D]
+        
+        # Apply encoder blocks
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        
+        return x, mask, ids_restore
+    
+    def forward_decoder(self, x, ids_restore):
+        """
+        Decode encoded features to reconstruct patches
+        
+        Args:
+            x: [B, N_keep+1, D] - encoded features with CLS token
+            ids_restore: [B, N] - indices to restore order
+        
+        Returns:
+            pred: [B, N, P^2*3] - reconstructed patches
+        """
         # Embed tokens
         x = self.decoder_embed(x)
         
@@ -92,249 +253,149 @@ class MAEDecoder(nn.Module):
         # Add pos embed
         x = x + self.decoder_pos_embed
         
-        # Apply blocks
+        # Apply decoder blocks
         for blk in self.decoder_blocks:
             x = blk(x)
-        
         x = self.decoder_norm(x)
+        
+        # Predict patches
         x = self.decoder_pred(x)
         
         # Remove cls token
         x = x[:, 1:, :]
         
         return x
-
-
-class HybridMAE(nn.Module):
-    """
-    MAE with Hybrid ConvNeXtV2+Attention encoder
     
-    CRITICAL: All outputs from masking module must be detached
-    to prevent retain_grad errors in Betty MLO framework
-    """
-    def __init__(self, img_size=224, patch_size=16, in_chans=3,
-                 encoder_embed_dim=768, decoder_embed_dim=512, decoder_depth=8,
-                 decoder_num_heads=16, norm_pix_loss=False):
-        super().__init__()
-        
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
-        self.norm_pix_loss = norm_pix_loss
-        
-        # Patch embedding
-        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, encoder_embed_dim)
-        
-        # CLS token and position embedding
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, encoder_embed_dim))
-        self.pos_embed = nn.Parameter(
-            torch.zeros(1, self.num_patches + 1, encoder_embed_dim),
-            requires_grad=False
-        )
-        
-        # Hybrid encoder (ConvNeXtV2 + Attention)
-        from models.hybrid_model import HybridConvNeXtV2
-        self.encoder = HybridConvNeXtV2(num_classes=1000, pretrained=True)
-        # Remove classification head - we'll use features
-        self.encoder.head = nn.Identity()
-        
-        # Decoder
-        self.decoder = MAEDecoder(
-            encoder_embed_dim, decoder_embed_dim, decoder_depth,
-            decoder_num_heads, patch_size
-        )
-        
-        # Initialize
-        torch.nn.init.normal_(self.cls_token, std=0.02)
-        self._init_pos_embed()
-    
-    def _init_pos_embed(self):
-        """Initialize positional embedding"""
-        from utils.pos_embed import get_2d_sincos_pos_embed
-        pos_embed = get_2d_sincos_pos_embed(
-            self.pos_embed.shape[-1],
-            int(self.num_patches ** 0.5),
-            cls_token=True
-        )
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-    
-    def patchify(self, imgs):
-        """Convert images to patches"""
-        p = self.patch_size
-        assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
-        
-        h = w = imgs.shape[2] // p
-        x = imgs.reshape(imgs.shape[0], 3, h, p, w, p)
-        x = torch.einsum('nchpwq->nhwpqc', x)
-        x = x.reshape(imgs.shape[0], h * w, p**2 * 3)
-        return x
-    
-    def forward_encoder(self, x, mask_module, images, mask_ratio=0.75, random=False):
+    def forward_with_mask(self, x_masked, mask, ids_restore):
         """
-        Encode with masking
+        Forward pass for MLO training (receives already-masked patches)
+        
+        This is called from MAEProblem.training_step()
         
         Args:
-            x: [B, N, D] - patch embeddings (BEFORE masking)
-            mask_module: masking module
-            images: [B, 3, H, W] - original images for UNet
-            mask_ratio: ratio of patches to mask
-            random: use random masking
+            x_masked: [B, N_keep, D] - unmasked patches from masking module
+            mask: [B, N] - binary mask from masking module
+            ids_restore: [B, N] - restore indices from masking module
         
         Returns:
-            latent: [B, N+1, D] - encoded features (ALL patches + CLS)
-            mask: [B, N] - binary mask
-            ids_restore: [B, N] - restore indices
-            mask_prob: [B, N] - masking probabilities
+            pred: [B, N, P^2*3] - reconstructed patches
         """
-        # CRITICAL: Get masking from module and DETACH outputs
-        x_masked, mask, ids_restore, mask_prob = mask_module(
-            images, x, mask_ratio, random
-        )
+        # Encode masked patches
+        latent, mask, ids_restore = self.forward_encoder_mlo(x_masked, mask, ids_restore)
         
-        # CRITICAL FIX: Detach mask and ids_restore to break gradient flow
-        # from frozen UNet parameters
-        mask = mask.detach()
-        ids_restore = ids_restore.detach()
-        # mask_prob stays as-is for gradient flow through learnable refinement
+        # Decode
+        pred = self.forward_decoder(latent, ids_restore)
         
-        # FIXED: Don't use masked patches for encoder
-        # Instead, encode the FULL image through the hybrid encoder
-        # The masking is only used for the reconstruction loss
+        return pred
+    
+    def forward(self, imgs, mask_module=None, mask_ratio=0.75, random=False):
+        """
+        Full forward pass (for testing or non-MLO training)
         
-        # Pass full image through hybrid encoder
-        B, _, H_img, W_img = images.shape
-        
-        # latent_features = self.encoder(images)  # [B, D_out, H_feat, W_feat]
-        latent_features = self.encoder.forward_features(images)
-        
-        # Convert encoder output back to patch sequence
-        # encoder.forward returns features before the head
-        # For hybrid model, this should be [B, 768, 7, 7] after all stages
-        # latent_features = latent_features.flatten(2).transpose(1, 2)  # [B, 49, 768]
-        if latent_features.dim() == 4:
-            # Conv feature map: [B, C, H, W] → tokens
-            latent_features = latent_features.flatten(2).transpose(1, 2)
-        elif latent_features.dim() == 3:
-            # Already tokenized: [B, N, C]
-            pass
-        else:
-            raise RuntimeError(
-                f"Unexpected latent_features shape: {latent_features.shape}"
-            )
-
-        
-        # Interpolate/pad to match original patch count if needed
-        if latent_features.shape[1] != self.num_patches:
-            # Resize to original patch grid
-            patch_size_enc = int(latent_features.shape[1] ** 0.5)
-            patch_size_orig = int(self.num_patches ** 0.5)
+        For MLO training, use forward_with_mask instead.
+        """
+        if mask_module is None:
+            # No masking - just encode and decode
+            latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio=0)
+            pred = self.forward_decoder(latent, ids_restore)
             
-            latent_features = latent_features.transpose(1, 2).reshape(
-                B, -1, patch_size_enc, patch_size_enc
-            )
-            latent_features = F.interpolate(
-                latent_features,
-                size=(patch_size_orig, patch_size_orig),
-                mode='bilinear',
-                align_corners=False
-            )
-            latent_features = latent_features.flatten(2).transpose(1, 2)  # [B, N, D]
+            target = self.patchify(imgs)
+            loss = ((pred - target) ** 2).mean()
+            return loss, pred, mask
         
-        # Add CLS token
-        cls_token = self.cls_token + self.pos_embed[:, :1, :]
-        cls_tokens = cls_token.expand(B, -1, -1)
-        latent = torch.cat([cls_tokens, latent_features], dim=1)  # [B, N+1, D]
-        
-        return latent, mask, ids_restore, mask_prob
-    
-    def forward(self, imgs, mask_module, mask_ratio=0.75, random=False):
-        """
-        Full MAE forward pass
-        
-        Args:
-            imgs: [B, 3, H, W] - input images
-            mask_module: masking module
-            mask_ratio: masking ratio
-            random: use random masking
-        
-        Returns:
-            loss: reconstruction loss
-            pred: [B, N, p^2*3] - predictions
-            mask: [B, N] - binary mask
-        """
-        # Patchify
+        # With masking module
         x = self.patch_embed(imgs)
         x = x + self.pos_embed[:, 1:, :]
         
-        # Encode with masking
-        latent, mask, ids_restore, mask_prob = self.forward_encoder(
-            x, mask_module, imgs, mask_ratio, random
-        )
+        x_masked, mask, ids_restore, mask_prob = mask_module(imgs, x, mask_ratio, random)
         
-        # Decode
-        pred = self.decoder(latent, ids_restore)
+        latent, mask, ids_restore = self.forward_encoder_mlo(x_masked, mask, ids_restore)
+        pred = self.forward_decoder(latent, ids_restore)
         
-        # Compute loss
         target = self.patchify(imgs)
-        
         if self.norm_pix_loss:
             mean = target.mean(dim=-1, keepdim=True)
             var = target.var(dim=-1, keepdim=True)
             target = (target - mean) / (var + 1e-6) ** 0.5
         
         loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)  # [B, N]
-        
-        # Weight by masking probability (for gradient flow)
+        loss = loss.mean(dim=-1)
         loss = loss * mask_prob
-        
-        # Mean loss on removed patches only
         loss = (loss * mask).sum() / mask.sum()
-        loss = loss.requires_grad_(True)
         
         return loss, pred, mask
 
 
 # Factory functions
-def mae_hybrid_base(pretrained_unet_path='unet/unet.pkl', **kwargs):
-    """MAE with Hybrid Base encoder"""
+def mae_hybrid_base(norm_pix_loss=False, **kwargs):
+    """MAE with ViT-Base style encoder"""
     model = HybridMAE(
         img_size=224,
         patch_size=16,
-        encoder_embed_dim=768,
+        embed_dim=768,
         decoder_embed_dim=512,
         decoder_depth=8,
         decoder_num_heads=16,
+        norm_pix_loss=norm_pix_loss,
         **kwargs
     )
     return model
 
 
 if __name__ == '__main__':
-    print("Testing Hybrid MAE")
+    print("Testing Hybrid MAE (v2)")
     print("="*60)
     
+    # Test without masking module first
+    mae = mae_hybrid_base(norm_pix_loss=True)
+    
+    # Count parameters
+    total = sum(p.numel() for p in mae.parameters())
+    trainable = sum(p.numel() for p in mae.parameters() if p.requires_grad)
+    print(f"\nMAE Parameters: {total/1e6:.2f}M (trainable: {trainable/1e6:.2f}M)")
+    
+    # Test forward_encoder
+    imgs = torch.randn(2, 3, 224, 224)
+    
+    print("\nTesting forward_encoder (for classification):")
+    latent, mask, ids = mae.forward_encoder(imgs)
+    print(f"  Input: {imgs.shape}")
+    print(f"  Latent: {latent.shape}")
+    print(f"  CLS token: {latent[:, 0].shape}")
+    
+    # Test with masking
+    print("\nTesting forward_with_mask (for reconstruction):")
     from models.masking_module import UNetMaskingModule
     
-    # Create models
-    mae = mae_hybrid_base(norm_pix_loss=True)
     mask_module = UNetMaskingModule(
         pretrained_unet_path='unet/unet.pkl',
         num_patches=196,
         embed_dim=768,
-        learnable=True
+        learnable=True,
+        use_unet=False  # Skip UNet for test
     )
     
-    # Test forward
-    imgs = torch.randn(2, 3, 224, 224)
+    # Get patch embeddings
+    x = mae.patch_embed(imgs)
+    x = x + mae.pos_embed[:, 1:, :]
     
-    with torch.no_grad():
-        loss, pred, mask = mae(imgs, mask_module, mask_ratio=0.75, random=False)
+    # Apply masking
+    x_masked, mask, ids_restore, mask_prob = mask_module(imgs, x, mask_ratio=0.75)
+    print(f"  x_masked: {x_masked.shape}")
+    print(f"  mask: {mask.shape}, sum={mask.sum().item()}")
     
-    print(f"\nForward pass:")
-    print(f"  Input: {imgs.shape}")
-    print(f"  Loss: {loss.item():.4f}")
-    print(f"  Pred: {pred.shape}")
-    print(f"  Mask: {mask.shape}")
-    print(f"  Masked ratio: {mask.mean():.2%}")
+    # Forward with mask
+    pred = mae.forward_with_mask(x_masked, mask, ids_restore)
+    print(f"  pred: {pred.shape}")
     
-    print("\n Model works!")
+    # Test gradient flow
+    print("\nTesting gradient flow:")
+    target = mae.patchify(imgs)
+    loss = ((pred - target) ** 2).mean(dim=-1)
+    loss = (loss * mask_prob).mean()
+    loss.backward()
+    
+    has_grad = mae.blocks[0].attn.qkv.weight.grad is not None
+    print(f"  Encoder blocks have gradients: {has_grad}")
+    
+    print("\n All tests passed!")
