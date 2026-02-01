@@ -50,10 +50,14 @@ def parse_args():
     # Training
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--lr_mae', type=float, default=1e-4)
-    parser.add_argument('--lr_classifier', type=float, default=5e-4)
+    parser.add_argument('--lr_mae', type=float, default=5e-5,
+                       help='MAE learning rate (lower to prevent overfitting)')
+    parser.add_argument('--lr_classifier', type=float, default=1e-3,
+                       help='Classifier learning rate (higher for faster learning)')
     parser.add_argument('--lr_masking', type=float, default=5e-5)
     parser.add_argument('--weight_decay', type=float, default=0.05)
+    parser.add_argument('--aux_cls_weight', type=float, default=0.5,
+                       help='Weight for auxiliary classification loss in MAE (0-1)')
     
     # MLO settings
     parser.add_argument('--unroll_mae', type=int, default=1)
@@ -89,11 +93,24 @@ def set_seed(seed):
 
 
 def load_isic_data(args):
-    """Load ISIC 2019 dataset"""
+    """Load ISIC 2019 dataset with proper augmentation"""
     from datasets.isic2019_dataset import ISIC2019Dataset
     
-    transform = transforms.Compose([
-        transforms.Resize(224),
+    # Training transforms with augmentation
+    train_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.RandomCrop(224),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomRotation(degrees=15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Validation transforms (no augmentation)
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -103,8 +120,8 @@ def load_isic_data(args):
     val_csv = os.path.join(args.data_path, 'val.csv')
     img_dir = os.path.join(args.data_path, 'images')
     
-    train_dataset = ISIC2019Dataset(train_csv, img_dir, transform=transform)
-    val_dataset = ISIC2019Dataset(val_csv, img_dir, transform=transform)
+    train_dataset = ISIC2019Dataset(train_csv, img_dir, transform=train_transform)
+    val_dataset = ISIC2019Dataset(val_csv, img_dir, transform=val_transform)
     
     return train_dataset, val_dataset
 
@@ -113,27 +130,28 @@ class MAEProblem(ImplicitProblem):
     """
     Stage 1: MAE Pretraining (Lowest Level)
     
-    Following MLOMAE pattern:
-    - Access masking module via self.masking (Problem reference)
-    - Gradient flows through mask_prob for hypergradient computation
-    - mask and ids_restore are detached (non-differentiable argsort)
+    Using Hybrid ConvNeXtV2 + Separable Attention encoder:
+    - ConvNeXtV2 stages 1-2 extract 384-dim patch embeddings at 14x14
+    - Masking applied to 196 tokens of dim 384
+    - Separable attention stages 3-4 process masked tokens
+    - Auxiliary classification loss helps learn discriminative features
     """
     def training_step(self, batch):
         images, labels, _ = batch
         images = images.to(self.device)
+        labels = labels.to(self.device)
         
-        # Step 1: Compute patch embeddings
-        x = self.module.patch_embed(images)
-        x = x + self.module.pos_embed[:, 1:, :]
+        # Step 1: Get patch embeddings from hybrid encoder (384-dim at 14x14)
+        # This uses ConvNeXtV2 stages 1-2 (pretrained)
+        x = self.module.get_patch_embeddings(images)  # [B, 196, 384]
         
-        # Step 2: Get masking from masking module (accessed via self.masking)
-        # This matches MLOMAE: self.mask.module.module.forward(...)
-        # For non-DDP, it's self.masking.module
+        # Step 2: Get masking from masking module
+        # Masking module expects [B, 196, embed_dim] and returns masked tokens
         x_masked, mask, ids_restore, mask_prob = self.masking.module(
             images, x, GLOBAL_ARGS.mask_ratio, random=GLOBAL_ARGS.baseline
         )
         
-        # Step 3: Forward through MAE encoder + decoder
+        # Step 3: Forward through attention stages + decoder
         pred = self.module.forward_with_mask(x_masked, mask, ids_restore)
         
         # Step 4: Compute reconstruction loss
@@ -143,18 +161,30 @@ class MAEProblem(ImplicitProblem):
             var = target.var(dim=-1, keepdim=True)
             target = (target - mean) / (var + 1e-6) ** 0.5
         
-        loss = (pred - target) ** 2
-        loss = loss.mean(dim=-1)  # [B, N], mean loss per patch
+        recon_loss = (pred - target) ** 2
+        recon_loss = recon_loss.mean(dim=-1)  # [B, N], mean loss per patch
         
-        # CRITICAL: Weight by mask_prob to enable backprop through masking module
-        # This is how MLOMAE enables gradient flow
+        # Weight by mask_prob to enable backprop through masking module
         if not GLOBAL_ARGS.baseline:
-            loss = loss * mask_prob
+            recon_loss = recon_loss * mask_prob
         
         # Mean loss on masked patches only
-        loss = (loss * mask).sum() / mask.sum()
+        recon_loss = (recon_loss * mask).sum() / mask.sum()
         
-        return loss
+        # Step 5: Auxiliary classification loss (helps learn discriminative features)
+        # Get full encoder output (no masking) for classification
+        encoder_output, _, _ = self.module.forward_encoder(images)
+        cls_features = encoder_output[:, 0]  # CLS token [B, 768]
+        
+        # Use classifier for auxiliary supervision
+        aux_logits = self.classifier.module.forward_from_features(cls_features)
+        aux_cls_loss = F.cross_entropy(aux_logits, labels)
+        
+        # Combine losses: reconstruction + auxiliary classification
+        aux_weight = getattr(GLOBAL_ARGS, 'aux_cls_weight', 0.5)
+        total_loss = recon_loss + aux_weight * aux_cls_loss
+        
+        return total_loss
 
 
 class ClassifierProblem(ImplicitProblem):
@@ -230,12 +260,14 @@ class SkinMLOEngine(Engine):
     
     @torch.no_grad()
     def validation(self):
-        """Validation on held-out set"""
+        """Validation on held-out set with per-class metrics"""
         self.eval()
         
         mae_model = self.mae.module
         classifier_model = self.classifier.module
         
+        all_preds = []
+        all_labels = []
         correct = 0
         total = 0
         
@@ -254,20 +286,46 @@ class SkinMLOEngine(Engine):
             
             correct += (preds == labels).sum().item()
             total += labels.size(0)
+            
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
         
         acc = 100.0 * correct / total
+        
+        # Compute per-class accuracy
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        
+        num_classes = 8
+        per_class_acc = []
+        for c in range(num_classes):
+            mask = all_labels == c
+            if mask.sum() > 0:
+                class_acc = (all_preds[mask] == c).mean() * 100
+                per_class_acc.append(class_acc)
+            else:
+                per_class_acc.append(0.0)
         
         # Log
         if self.is_rank_zero():
             logging.info(f"[Validation] Step {self.global_step}: Accuracy = {acc:.2f}%")
+            logging.info(f"  Per-class: {[f'{a:.1f}' for a in per_class_acc]}")
+            
+            # Check prediction distribution
+            pred_dist = np.bincount(all_preds, minlength=num_classes)
+            logging.info(f"  Pred dist: {pred_dist.tolist()}")
+            
             try:
-                wandb.log({
+                log_dict = {
                     'val_acc': acc,
                     'best_acc': self.best_acc,
                     'global_step': self.global_step
-                })
+                }
+                for c, a in enumerate(per_class_acc):
+                    log_dict[f'val_acc_class_{c}'] = a
+                wandb.log(log_dict)
             except:
-                pass  # wandb might not be initialized
+                pass
         
         # Save best
         if acc > self.best_acc:
@@ -363,26 +421,31 @@ def main():
     
     # Build models
     print("\nBuilding models...")
+    print("  Encoder: Hybrid ConvNeXtV2 (pretrained) + Separable Self-Attention")
     
-    # 1. MAE with hybrid encoder
+    # 1. MAE with Hybrid ConvNeXtV2 + Separable Attention encoder
     mae_model = mae_hybrid_base(
-        norm_pix_loss=args.norm_pix_loss
+        norm_pix_loss=args.norm_pix_loss,
+        pretrained=True  # Use ImageNet pretrained ConvNeXtV2
     ).to(device)
     
     # 2. Masking module (with frozen UNet for importance estimation)
+    # Uses 384-dim embeddings from hybrid encoder's stage2 output
     masking_module = UNetMaskingModule(
         pretrained_unet_path=args.unet_path,
         num_patches=196,
-        embed_dim=768,
+        embed_dim=384,  # Matches hybrid encoder output at 14x14 level
         learnable=True,
         use_unet=True
     ).to(device)
     
-    # 3. Classifier head (lightweight, uses MAE encoder features)
+    # 3. Classifier head (enhanced with MLP for better capacity)
     from models.hybrid_classifier import ClassifierHead
     classifier_head = ClassifierHead(
         embed_dim=768,
-        num_classes=8
+        num_classes=8,
+        drop_rate=0.2,
+        mlp_hidden=512  # More capacity for classification
     ).to(device)
     
     # Count parameters
@@ -549,6 +612,8 @@ def main():
     print(f"  Validation every: {engine_config.valid_step} iterations")
     print(f"  Unroll steps: mae={args.unroll_mae}, cls={args.unroll_classifier}, mask={args.unroll_masking}")
     print(f"  Baseline (random masking): {args.baseline}")
+    print(f"  Learning rates: mae={args.lr_mae}, cls={args.lr_classifier}, mask={args.lr_masking}")
+    print(f"  Auxiliary classification weight: {args.aux_cls_weight}")
     
     print("\n" + "="*60)
     print("Starting training...")
